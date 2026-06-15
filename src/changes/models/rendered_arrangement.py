@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Literal, Optional, Tuple, List, Dict, Any
 
-LayerRole = Literal["cloud", "chord", "bass"]
+LayerRole = Literal["cloud", "chord", "bass", "lpc_lead"]
 ChordLengthMode = Literal["explicit_event_length", "inherit"]
 
 
@@ -45,6 +45,16 @@ class RenderedBassLayer:
 
 
 @dataclass(frozen=True)
+class RenderedLpcLeadLayer:
+    """LPC Lead Layer (v0.3.0 beta) — 8 notes for Tracks 9–16."""
+    role: Literal["lpc_lead"]
+    notes: Tuple[RenderedLayerNote, ...]
+    source_pitch_classes: Tuple[int, ...]
+    range_start_midi: int
+    diagnostics: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RenderedHarmonyOccurrence:
     id: str
     source_harmony_id: str
@@ -54,6 +64,7 @@ class RenderedHarmonyOccurrence:
     cloud: Optional[RenderedCloudLayer] = None
     chord: Optional[RenderedChordLayer] = None
     bass: Optional[RenderedBassLayer] = None
+    lpc_lead: Optional[RenderedLpcLeadLayer] = None
     diagnostics: Tuple[str, ...] = ()
 
 

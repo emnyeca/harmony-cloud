@@ -28,6 +28,10 @@ SysEx送信は選択したMIDIポート上のDigitone IIへpattern dataを書き
 - Preview / Send を使うには、利用環境でMIDI backendが利用可能である必要があります。
 - EUB Changes はMIDIポートを自動選択しません。送信前に必ず送信先ポートを確認してください。
 
+## LPC Lead Layer (beta)
+
+LPC Lead Layer は v0.3.0 の beta feature です。Tracks 9–16 を占有し、外部 MIDI 入力をリアルタイムに処理しません。Track Level の調整は Digitone II 側またはユーザーの MIDI 環境で行ってください。
+
 ## 対応範囲
 
 EUB Changes は Digitone II 向けのmachine-live支援ツールです。

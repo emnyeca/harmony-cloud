@@ -39,17 +39,28 @@ def _track_defaults_payload(track_default_velocity: dict[int, int] | None) -> di
     return {"velocity": ordered}
 
 
-def _track_scale_payload(*, length: int, speed: str) -> dict[int, dict[str, int | str]]:
+def _track_scale_payload(
+    *, length: int, speed: str, lpc_lead_enabled: bool = False
+) -> dict[int, dict[str, int | str]]:
     payload = {
         track: {"length": int(length), "speed": str(speed)}
         for track in TRACK_SCALE_COMPUTED_RANGE
     }
-    payload.update(
-        {
-            track: {"length": TRACK_SCALE_FIXED_LENGTH, "speed": TRACK_SCALE_FIXED_SPEED}
-            for track in TRACK_SCALE_FIXED_RANGE
-        }
-    )
+    if lpc_lead_enabled:
+        # Tracks 9–16 follow the same length/speed as Tracks 1–8 (Cloud timing)
+        payload.update(
+            {
+                track: {"length": int(length), "speed": str(speed)}
+                for track in TRACK_SCALE_FIXED_RANGE
+            }
+        )
+    else:
+        payload.update(
+            {
+                track: {"length": TRACK_SCALE_FIXED_LENGTH, "speed": TRACK_SCALE_FIXED_SPEED}
+                for track in TRACK_SCALE_FIXED_RANGE
+            }
+        )
     return payload
 
 
@@ -81,6 +92,7 @@ def digitone_compile_plan_to_events_yaml_payload(
     *,
     track_default_velocity: dict[int, int] | None = None,
     pattern_change_policy: str = PATTERN_CHANGE_POLICY_AUTO_SONG_MODE,
+    lpc_lead_enabled: bool = False,
 ) -> dict:
     pattern_change = pattern_change_value(
         length=plan.total_steps,
@@ -97,7 +109,9 @@ def digitone_compile_plan_to_events_yaml_payload(
             "change": pattern_change,
             "reset": "INF",
         },
-        "track_scale": _track_scale_payload(length=plan.total_steps, speed=plan.speed),
+        "track_scale": _track_scale_payload(
+            length=plan.total_steps, speed=plan.speed, lpc_lead_enabled=lpc_lead_enabled
+        ),
     }
     track_defaults = _track_defaults_payload(track_default_velocity)
     if track_defaults is not None:
@@ -112,6 +126,7 @@ def digitone_pattern_segment_to_events_yaml_payload(
     *,
     track_default_velocity: dict[int, int] | None = None,
     pattern_change_policy: str = PATTERN_CHANGE_POLICY_AUTO_SONG_MODE,
+    lpc_lead_enabled: bool = False,
 ) -> dict:
     pattern_change = pattern_change_value(
         length=segment.total_steps,
@@ -128,7 +143,9 @@ def digitone_pattern_segment_to_events_yaml_payload(
             "change": pattern_change,
             "reset": "INF",
         },
-        "track_scale": _track_scale_payload(length=segment.total_steps, speed=timing.speed),
+        "track_scale": _track_scale_payload(
+            length=segment.total_steps, speed=timing.speed, lpc_lead_enabled=lpc_lead_enabled
+        ),
     }
     track_defaults = _track_defaults_payload(track_default_velocity)
     if track_defaults is not None:

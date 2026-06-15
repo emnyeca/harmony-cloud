@@ -35,6 +35,11 @@ class AppSettings:
     chord_center_midi: int = 60   # C4
     chord_track: int | None = 8
 
+    # LPC Lead Layer (v0.3.0 beta) — Tracks 9–16
+    lpc_lead_layer_enabled: bool = False
+    lpc_lead_layer_range_root: int = 0   # pitch class 0=C … 11=B
+    lpc_lead_layer_octave: int = 4        # e.g. 4 → range C4–B4
+
     # Safety
     confirm_before_hardware_write: bool = True
     pattern_change_policy: str = "auto_song_mode"  # auto_song_mode | off

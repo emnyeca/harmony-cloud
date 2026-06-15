@@ -15,13 +15,14 @@ from changes.models.render_profile import RenderProfile, default_render_profile
 from changes.models.rendered_arrangement import RenderedArrangement
 from changes.models.rendered_timeline import RenderedNoteEvent, RenderedTimeline
 
-DEFAULT_LAYERS = ("cloud", "bass", "chord")
+DEFAULT_LAYERS = ("cloud", "bass", "chord", "lpc_lead")
 _ALLOWED_LAYERS = frozenset(DEFAULT_LAYERS)
 
 _ROLE_ORDER = {
     "cloud": 0,
     "chord": 1,
     "bass": 2,
+    "lpc_lead": 3,
 }
 
 
@@ -92,10 +93,11 @@ def flatten_arrangement_to_timeline(
         "cloud": profile.cloud_trigger_policy,
         "bass": profile.bass_trigger_policy,
         "chord": profile.chord_trigger_policy,
+        "lpc_lead": profile.cloud_trigger_policy,  # LPC Lead follows Cloud timing policy
     }
 
     selected_layers = set(normalize_layers(layers))
-    layer_events: dict[str, list[RenderedNoteEvent]] = {"cloud": [], "bass": [], "chord": []}
+    layer_events: dict[str, list[RenderedNoteEvent]] = {"cloud": [], "bass": [], "chord": [], "lpc_lead": []}
 
     for occurrence_index, occurrence in enumerate(arrangement.occurrences, start=1):
         occurrence_key = occurrence.id if occurrence.id else f"occ{occurrence_index}"
@@ -146,6 +148,22 @@ def flatten_arrangement_to_timeline(
                     velocity=occurrence.bass.note.velocity,
                 )
             )
+
+        if "lpc_lead" in selected_layers and occurrence.lpc_lead is not None:
+            for note_index, note in enumerate(occurrence.lpc_lead.notes, start=1):
+                layer_events["lpc_lead"].append(
+                    RenderedNoteEvent(
+                        id=f"{occurrence_key}_lpc_lead_{note_index}",
+                        voice_id=note.lane_id or f"lpc_lead_slot_{note_index}",
+                        role="lpc_lead",
+                        note_midi=note.note_midi,
+                        onset_quarters=occurrence.onset_quarters,
+                        duration_quarters=occurrence.duration_quarters,
+                        source_harmony_id=occurrence.source_harmony_id,
+                        retrigger=True,
+                        velocity=note.velocity,
+                    )
+                )
 
     events: list[RenderedNoteEvent] = []
     for layer_name in DEFAULT_LAYERS:

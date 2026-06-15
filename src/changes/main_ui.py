@@ -2270,6 +2270,54 @@ def _render_settings() -> None:
         if new_chord_track != settings.chord_track:
             settings.chord_track = new_chord_track; changed = True
 
+    st.space("small")
+
+    # ── LPC Lead Layer (beta) ─────────────────────────────────────────────────
+    st.markdown("**Tracks 9–16**")
+    lpc_cur = getattr(settings, "lpc_lead_layer_enabled", False)
+    lpc_new = _toggle(
+        "Enable LPC Lead Layer (beta)",
+        "_s_lpc_enabled",
+        lpc_cur,
+        help=(
+            "When enabled, EUB Changes uses Tracks 9–16 for Local Pitch Collection lead notes. "
+            "This is exclusive with User Arrangement material on Tracks 9–16."
+        ),
+    )
+    if lpc_new != lpc_cur:
+        settings.lpc_lead_layer_enabled = lpc_new; changed = True
+
+    if getattr(settings, "lpc_lead_layer_enabled", False):
+        _LPC_ROOT_NAMES_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+        _LPC_ROOT_NAMES_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        _lpc_root_names = _LPC_ROOT_NAMES_SHARP if getattr(settings, "note_accidental", "flat") == "sharp" else _LPC_ROOT_NAMES_FLAT
+        cur_root = getattr(settings, "lpc_lead_layer_range_root", 0)
+        cur_octave = getattr(settings, "lpc_lead_layer_octave", 4)
+
+        lpc_c1, lpc_c2, lpc_c3 = st.columns([2, 1, 3])
+        with lpc_c1:
+            new_root_name = st.selectbox(
+                "Range root",
+                _lpc_root_names,
+                index=cur_root,
+                key="_s_lpc_root",
+            )
+            new_root_pc = _lpc_root_names.index(new_root_name)
+            if new_root_pc != cur_root:
+                settings.lpc_lead_layer_range_root = new_root_pc; changed = True
+        with lpc_c2:
+            _LPC_OCTAVE_OPTS = [2, 3, 4, 5, 6]
+            oct_idx = _LPC_OCTAVE_OPTS.index(cur_octave) if cur_octave in _LPC_OCTAVE_OPTS else 2
+            new_octave = st.selectbox("Octave", _LPC_OCTAVE_OPTS, index=oct_idx, key="_s_lpc_octave")
+            if new_octave != cur_octave:
+                settings.lpc_lead_layer_octave = new_octave; changed = True
+        with lpc_c3:
+            _lpc_rs = (getattr(settings, "lpc_lead_layer_octave", 4) + 1) * 12 + getattr(settings, "lpc_lead_layer_range_root", 0)
+            st.write(" ")
+            st.caption(f"Range: {_midi_display_name(_lpc_rs)} – {_midi_display_name(_lpc_rs + 11)}")
+    else:
+        st.caption("Tracks 9–16: User Arrangement (not managed by EUB Changes)")
+
     st.divider()
 
     # ── Settings ───────────────────────────────────────────────────────────────

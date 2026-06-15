@@ -14,6 +14,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from changes.app_settings import AppSettings
+from changes.lpc_lead_layer import LPC_LEAD_FIRST_TRACK, LPC_LEAD_SLOT_COUNT, lpc_lead_range_start_midi
 from changes.models.digitone_target_profile import (
     DEFAULT_SPEED_CANDIDATES,
     DigitoneTargetProfile,
@@ -44,6 +45,10 @@ def settings_to_render_profile(settings: AppSettings) -> RenderProfile:
     cc = settings.cloud_center_midi
     bc = settings.bass_center_midi
     ch = settings.chord_center_midi
+    lpc_range_start = lpc_lead_range_start_midi(
+        settings.lpc_lead_layer_range_root,
+        settings.lpc_lead_layer_octave,
+    )
     return RenderProfile(
         name="ui_custom",
         voices=6,
@@ -63,6 +68,8 @@ def settings_to_render_profile(settings: AppSettings) -> RenderProfile:
         chord_max_midi=ch + 12,
         bass_min_midi=bc,
         bass_max_midi=bc + 11,
+        lpc_lead_enabled=settings.lpc_lead_layer_enabled,
+        lpc_lead_range_start_midi=lpc_range_start,
     )
 
 
@@ -134,6 +141,13 @@ def settings_to_target_profile(settings: AppSettings) -> DigitoneTargetProfile:
         routing["bass"] = LayerRouting(voices=bass_voices)
     if chord_voices:
         routing["chord"] = LayerRouting(voices=chord_voices)
+
+    if settings.lpc_lead_layer_enabled:
+        lpc_voices: dict[str, VoiceRouting] = {
+            f"lpc_lead_slot_{i}": VoiceRouting(track=LPC_LEAD_FIRST_TRACK + i - 1)
+            for i in range(1, LPC_LEAD_SLOT_COUNT + 1)
+        }
+        routing["lpc_lead"] = LayerRouting(voices=lpc_voices)
 
     return DigitoneTargetProfile(
         name="ui_custom",
@@ -246,6 +260,7 @@ def song_to_syx_bytes(song: SongModel, settings: AppSettings) -> bytes:
         plan,
         track_default_velocity=compiled.target_profile.track_default_velocity,
         pattern_change_policy=settings.pattern_change_policy,
+        lpc_lead_enabled=settings.lpc_lead_layer_enabled,
     )
     yaml_fd, yaml_path = tempfile.mkstemp(suffix=".yaml")
     syx_fd, syx_path = tempfile.mkstemp(suffix=".syx")
@@ -288,6 +303,7 @@ def song_to_syx_bytes_linear_split(
             split_plan.timing,
             track_default_velocity=compiled.target_profile.track_default_velocity,
             pattern_change_policy=settings.pattern_change_policy,
+            lpc_lead_enabled=settings.lpc_lead_layer_enabled,
         )
         yaml_fd, yaml_path = tempfile.mkstemp(suffix=".yaml")
         syx_fd, syx_path = tempfile.mkstemp(suffix=".syx")
@@ -337,6 +353,7 @@ def song_to_syx_bytes_bundle(
             bundle_plan.timing,
             track_default_velocity=compiled.target_profile.track_default_velocity,
             pattern_change_policy=settings.pattern_change_policy,
+            lpc_lead_enabled=settings.lpc_lead_layer_enabled,
         )
         yaml_fd, yaml_path = tempfile.mkstemp(suffix=".yaml")
         syx_fd, syx_path = tempfile.mkstemp(suffix=".syx")

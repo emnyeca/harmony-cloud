@@ -28,6 +28,9 @@ class RenderProfile:
     chord_max_midi: int
     bass_min_midi: int
     bass_max_midi: int
+    # LPC Lead Layer (v0.3.0 beta)
+    lpc_lead_enabled: bool = False
+    lpc_lead_range_start_midi: int = 60  # C4
 
 
 def default_render_profile() -> RenderProfile:
@@ -50,6 +53,8 @@ def default_render_profile() -> RenderProfile:
         chord_max_midi=72,
         bass_min_midi=36,
         bass_max_midi=47,
+        lpc_lead_enabled=False,
+        lpc_lead_range_start_midi=60,
     )
 
 

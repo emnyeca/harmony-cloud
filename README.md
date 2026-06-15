@@ -55,6 +55,12 @@ Tracks 9–16 remain available for your own arrangement and live performance mat
 
 EUB Changes can import iReal Pro song or playlist html by converting it to MusicXML with the bundled `ireal-musicxml` converter, then passing the result through the normal MusicXML import pipeline. Some iReal-specific information (layout, alternate chords, backing tracks) is not fully represented; see [`docs/known-limitations.md`](docs/known-limitations.md).
 
+### LPC Lead Layer (beta)
+
+EUB Changes can optionally use Tracks 9–16 as a Local Pitch Collection lead layer.
+
+When enabled, each chord cell places up to eight LPC notes onto Tracks 9–16 within a selected one-octave range. This mode is exclusive with User Arrangement material on Tracks 9–16.
+
 ### Note on tempo and speed
 
 EUB Changes may set Digitone II BPM / Track Speed / Track Length differently from the source chart tempo. This is expected.

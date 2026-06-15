@@ -8,6 +8,7 @@ from changes.chord_engine import ChordConstructionResult, construct_chord_pitch_
 from changes.chord_parser import parse_chord_core
 from changes.chord_realization import ChordRegisterPolicy, realize_chord_register
 from changes.harmonic_context import extract_output_chord_tone_set, resolve_scale_collection_with_retry_details
+from changes.lpc_lead_layer import compute_lpc_lead_notes, lpc_lead_voice_ids, LPC_LEAD_SLOT_COUNT
 from changes.models.render_profile import RenderProfile, default_render_profile
 from changes.models.rendered_arrangement import (
     RenderedArrangement,
@@ -16,6 +17,7 @@ from changes.models.rendered_arrangement import (
     RenderedCloudLayer,
     RenderedHarmonyOccurrence,
     RenderedLayerNote,
+    RenderedLpcLeadLayer,
 )
 from changes.models.song_model import HarmonyEvent, SongModel
 from changes.voice_leading import generate_voice_leading
@@ -189,6 +191,22 @@ def render_arrangement(song: SongModel, profile: RenderProfile | None = None) ->
                 source_pitch_class=bass_source_pc,
             )
 
+        lpc_lead_layer = None
+        if active_profile.lpc_lead_enabled:
+            collection_pcs = frozenset(resolved.selected_collection.pitch_classes)
+            lpc_midi_notes = compute_lpc_lead_notes(collection_pcs, active_profile.lpc_lead_range_start_midi)
+            voice_ids = lpc_lead_voice_ids()
+            lpc_lead_notes = tuple(
+                RenderedLayerNote(note_midi=note_midi, lane_id=vid)
+                for note_midi, vid in zip(lpc_midi_notes, voice_ids)
+            )
+            lpc_lead_layer = RenderedLpcLeadLayer(
+                role="lpc_lead",
+                notes=lpc_lead_notes,
+                source_pitch_classes=tuple(sorted(collection_pcs)),
+                range_start_midi=active_profile.lpc_lead_range_start_midi,
+            )
+
         rendered_occurrences.append(
             RenderedHarmonyOccurrence(
                 id=harmony.id,
@@ -199,6 +217,7 @@ def render_arrangement(song: SongModel, profile: RenderProfile | None = None) ->
                 cloud=cloud_layer,
                 chord=chord_layer,
                 bass=bass_layer,
+                lpc_lead=lpc_lead_layer,
             )
         )
 
