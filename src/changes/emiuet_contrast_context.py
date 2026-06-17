@@ -87,7 +87,8 @@ def contrast_context(symbol: str) -> dict | None:
         return None
 
     root = identity.root_pc
-    lpc_pcs = sorted((root + i) % 12 for i in _SCALE_TEMPLATES[scale_name])
+    # lpc は scale root からの順序を保つ（"スケールを辿る感触" のため数値昇順にしない）。
+    lpc_pcs = tuple((root + i) % 12 for i in _SCALE_TEMPLATES[scale_name])
     core_pcs = resolver_core_pitch_classes(symbol)
 
     # 必須ガード: resolver_core を含まない scale は採用しない。
@@ -104,6 +105,6 @@ def contrast_context(symbol: str) -> dict | None:
         "scale_root": semitone_to_pitch_class(root),
         "selection_policy": "contrast_priority",
         "hard_context": _names(sorted(hard_context_pitch_classes(symbol))),
-        "resolver_core": list(resolver_core_names(symbol)),
-        "lpc": _names(lpc_pcs),
+        "resolver_core": list(resolver_core_names(symbol)),  # root-relative order
+        "lpc": _names(lpc_pcs),  # root-ordered (not numerically sorted)
     }

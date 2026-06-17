@@ -41,6 +41,17 @@ def test_g7_half_whole_pitch_classes():
     assert _pcs(ctx["lpc"]) == {7, 8, 10, 11, 1, 2, 4, 5}
 
 
+def test_g7_contrast_lpc_is_root_ordered():
+    # lpc は数値昇順ではなく scale root (G) から始まる順序であること。
+    ctx = contrast_context("G7")
+    assert ctx["lpc"] == ["G", "G#", "A#", "B", "C#", "D", "E", "F"]
+
+
+def test_cmaj7_contrast_lpc_is_root_ordered():
+    ctx = contrast_context("Cmaj7")
+    assert ctx["lpc"] == ["C", "D", "E", "F#", "G", "A", "B"]  # C Lydian, root-ordered
+
+
 def test_cmaj7_lydian_pitch_classes():
     ctx = contrast_context("Cmaj7")
     assert _pcs(ctx["lpc"]) == _pcs(["C", "D", "E", "F#", "G", "A", "B"])
