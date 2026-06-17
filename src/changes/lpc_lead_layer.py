@@ -55,15 +55,14 @@ def compute_lpc_lead_notes(
         raise ValueError("pitch_classes must not be empty")
     notes: list[int] = []
     midi = range_start_midi
-    # Walk up until we have 8 notes; limit scan to avoid infinite loop on empty set
-    scan_limit = range_start_midi + 128
-    while len(notes) < LPC_LEAD_SLOT_COUNT and midi < scan_limit:
+    while len(notes) < LPC_LEAD_SLOT_COUNT and midi <= 127:
         if midi % 12 in pitch_classes:
             notes.append(midi)
         midi += 1
     if len(notes) < LPC_LEAD_SLOT_COUNT:
         raise ValueError(
-            f"Could not find {LPC_LEAD_SLOT_COUNT} notes from pitch_classes={pitch_classes!r} "
-            f"within 128 semitones of range_start_midi={range_start_midi}"
+            f"Could not find {LPC_LEAD_SLOT_COUNT} LPC lead notes within MIDI 0–127: "
+            f"pitch_classes={pitch_classes!r}, range_start_midi={range_start_midi}. "
+            f"Try a lower range_start_midi or a pitch collection with more notes."
         )
     return tuple(notes)

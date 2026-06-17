@@ -152,12 +152,18 @@ def test_9_plus_pcs_trimmed_to_8():
     assert len(notes) == LPC_LEAD_SLOT_COUNT
 
 
-def test_always_8_notes():
-    pcs = frozenset({0})  # single pitch class
+def test_notes_never_exceed_midi_127():
+    """MIDI note 127 is the ceiling — notes above it are invalid."""
+    pcs = frozenset({0, 2, 4, 7, 9})  # 5 pitch classes
     notes = compute_lpc_lead_notes(pcs, 60)
-    assert len(notes) == LPC_LEAD_SLOT_COUNT
-    # Should be C4, C5, C6, C7, C8, C9, C10, C11
-    assert notes == (60, 72, 84, 96, 108, 120, 132, 144)
+    assert all(0 <= n <= 127 for n in notes), f"Out-of-range MIDI notes: {notes}"
+
+
+def test_raises_when_8_notes_unreachable_within_midi_range():
+    """Single pitch class starting near MIDI 127 cannot produce 8 notes — raise ValueError."""
+    pcs = frozenset({0})  # C only: C4=60, C5=72, C6=84, C7=96, C8=108, C9=120 → 6 notes max
+    with pytest.raises(ValueError, match="MIDI 0–127"):
+        compute_lpc_lead_notes(pcs, 60)
 
 
 def test_lpc_lead_voice_ids_count():
