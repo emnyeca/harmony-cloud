@@ -17,6 +17,7 @@ schema 仕様は emiuet-session 側 docs/compiled_timeline_schema.md。
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 
 from ..emiuet_contrast_context import contrast_context
 from ..emiuet_resolver_core import resolver_core_names
@@ -46,6 +47,12 @@ def _names(pcs) -> list[str]:
     return [semitone_to_pitch_class(pc) for pc in sorted(pcs)]
 
 
+def _root_ordered_names(pcs, root_pc: int) -> list[str]:
+    """scale root からの順序を保った note 名（数値昇順にしない）。"""
+    ordered = sorted(pcs, key=lambda pc: (pc - root_pc) % 12)
+    return [semitone_to_pitch_class(pc) for pc in ordered]
+
+
 def _progression_context(symbols: list[str], index: int) -> dict:
     chord = symbols[index]
     lpc, collection = resolve_scale_collection_with_retry(symbols, index)
@@ -58,9 +65,9 @@ def _progression_context(symbols: list[str], index: int) -> dict:
         "display": chord,
         "scale_name": collection.name,
         "scale_root": semitone_to_pitch_class(scale_root),
-        "hard_context": _names(hard_context_pitch_classes(chord)),
-        "resolver_core": list(resolver_core_names(chord)),
-        "lpc": _names(lpc),
+        "hard_context": _names(hard_context_pitch_classes(chord)),  # 昇順で実害なし
+        "resolver_core": list(resolver_core_names(chord)),  # root-relative order
+        "lpc": _root_ordered_names(lpc, scale_root),  # scale root からの順序
     }
 
 
@@ -110,3 +117,59 @@ def build_emiuet_compiled_timeline(
         "form": {"loop": loop, "start_tick": 0, "end_tick": end_tick},
         "steps": out_steps,
     }
+
+
+def emiuet_timeline_from_chord_events(
+    chord_events,
+    *,
+    performance_tempo,
+    device_tempo,
+    ppqn: int = 24,
+    meter: str = "4/4",
+    loop: bool = True,
+) -> dict:
+    """Track 8 chord events（Syx の chord track と同一ソース）から timeline を作る。
+
+    tick は **Digitone が実際に送る MIDI Clock の grid**（device tempo 基準）へ落とす:
+
+        tick = round(onset_quarters * ppqn * device_tempo / performance_tempo)
+
+    これにより、Emiuet Session 側で SPEED / LENGTH / tempo を再解釈する必要がなく、
+    原曲小節ではなく Digitone Step 進行に同期する。``chord_events`` は
+    ``id`` / ``symbol`` / ``onset_quarters`` / ``duration_quarters`` を持つ object。
+    """
+    scale = Fraction(ppqn) * Fraction(device_tempo) / Fraction(performance_tempo)
+
+    def tick(quarters) -> int:
+        return int(round(float(Fraction(quarters) * scale)))
+
+    events = list(chord_events)
+    starts = [tick(ev.onset_quarters) for ev in events]
+    steps: list[CompiledStepInput] = []
+    for i, ev in enumerate(events):
+        start = starts[i]
+        # 連続した tick range にする（次 step の onset を end とし、最後は onset+duration）。
+        if i + 1 < len(events):
+            end = starts[i + 1]
+        else:
+            end = tick(Fraction(ev.onset_quarters) + Fraction(ev.duration_quarters))
+        if end <= start:
+            end = start + 1  # 退避: 0 長は importer が拒否するため最低 1 tick
+        steps.append(
+            CompiledStepInput(
+                id=getattr(ev, "id", f"step_{i:03d}"),
+                start_tick=start,
+                end_tick=end,
+                chord=ev.symbol,
+                source_step_index=i,
+            )
+        )
+
+    return build_emiuet_compiled_timeline(
+        steps,
+        ppqn=ppqn,
+        original_tempo=float(performance_tempo),
+        digitone_tempo=float(device_tempo),
+        meter=meter,
+        loop=loop,
+    )

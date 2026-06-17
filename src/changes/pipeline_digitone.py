@@ -11,6 +11,8 @@ import yaml
 from changes.digitone_backend import build_digitone_syx_from_events_yaml
 from changes.digitone.bundle_planner import compile_timeline_to_digitone_bundle_plan
 from changes.digitone.planner import compile_timeline_to_digitone_plan
+from changes.digitone.track8_chord_events import extract_track8_chord_events
+from changes.exporters.emiuet_timeline import emiuet_timeline_from_chord_events
 from changes.exporters.digitone_events import (
     digitone_compile_plan_to_events_yaml_payload,
     digitone_pattern_segment_to_events_yaml_payload,
@@ -200,6 +202,51 @@ def compile_digitone_pipeline(
     )
 
     return song, timeline, plan, events_payload
+
+
+def compile_emiuet_session_timeline(
+    payload: dict,
+    render_profile: RenderProfile | None = None,
+    target_profile: DigitoneTargetProfile | None = None,
+    layers: str | list[str] | tuple[str, ...] | set[str] | None = None,
+    *,
+    ppqn: int = 24,
+    meter: str = "4/4",
+) -> dict:
+    """Emiuet Session 用 compiled timeline JSON を生成する（Syx と同一の compile path）。
+
+    Syx 生成と同じ render→flatten→plan を辿り、その plan の device/performance tempo と、
+    同じ arrangement から取った Track 8 chord events（Syx の chord track と同一ソース）を
+    使って Digitone-step 基準の timeline を出す。tick は device tempo の MIDI Clock grid。
+    """
+    rp = render_profile or default_render_profile()
+    tp = target_profile or default_digitone_target_profile()
+
+    song = compact_progression_to_song_model(payload)
+    arrangement = render_arrangement(song, rp)
+    timeline = flatten_arrangement_to_timeline(arrangement, layers=layers, render_profile=rp)
+    plan = compile_timeline_to_digitone_plan(timeline, tp)
+    chord_events = extract_track8_chord_events(arrangement)
+
+    return emiuet_timeline_from_chord_events(
+        chord_events,
+        performance_tempo=plan.performance_tempo,
+        device_tempo=plan.device_tempo,
+        ppqn=ppqn,
+        meter=meter,
+    )
+
+
+def save_emiuet_session_timeline(
+    output_dir: str | Path,
+    timeline_dict: dict,
+    filename: str = "emiuet_session_timeline.json",
+) -> Path:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / filename
+    path.write_text(json.dumps(timeline_dict, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    return path
 
 
 def compile_digitone_bundle_pipeline(
