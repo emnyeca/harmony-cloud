@@ -192,6 +192,33 @@ def test_build_emiuet_session_song_payload_helper():
     assert payload["timelines"][0]["advance_mode"] == "clock_song"
 
 
+def test_emiuet_session_song_rejects_invalid_timeline_invariants():
+    timeline = EmiuetSessionTimeline(
+        "clock_song",
+        "clock_song",
+        "original_song",
+        clock_song_timeline_from_chords(["Dm7"]),
+    )
+    for kwargs, message in (
+        ({"timelines": ()}, "at least one timeline"),
+        ({"timelines": (timeline, timeline)}, "unique"),
+        ({"timelines": (timeline,), "default_timeline_id": "missing"}, "default_timeline_id"),
+    ):
+        try:
+            EmiuetSessionSong(
+                song_id="bad",
+                title="Bad",
+                default_key="C",
+                default_tempo=120.0,
+                meter="4/4",
+                **kwargs,
+            )
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError(f"expected invalid song invariant to fail: {kwargs}")
+
+
 def test_contrast_demo_artifacts_include_payload_and_index():
     artifacts = build_contrast_demo_session_artifacts()
     payload = artifacts["song_payload"]

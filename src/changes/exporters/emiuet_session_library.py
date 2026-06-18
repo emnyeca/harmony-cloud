@@ -75,6 +75,15 @@ class EmiuetSessionSong:
     timelines: tuple[EmiuetSessionTimeline, ...]
     default_timeline_id: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.timelines:
+            raise ValueError("EmiuetSessionSong must have at least one timeline")
+        ids = [timeline.id for timeline in self.timelines]
+        if len(ids) != len(set(ids)):
+            raise ValueError("EmiuetSessionSong timeline ids must be unique")
+        if self.default_timeline_id is not None and self.default_timeline_id not in set(ids):
+            raise ValueError("default_timeline_id must reference an existing timeline")
+
     def to_payload_dict(self) -> dict:
         out = {
             "schema": SONG_PAYLOAD_SCHEMA_NAME,
