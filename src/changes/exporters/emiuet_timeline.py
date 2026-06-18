@@ -74,6 +74,7 @@ def _progression_context(symbols: list[str], index: int) -> dict:
 def build_emiuet_compiled_timeline(
     steps: list[CompiledStepInput],
     *,
+    timeline_basis: str = "digitone_step",
     ppqn: int = 24,
     original_tempo: float | None = None,
     digitone_tempo: float | None = None,
@@ -107,7 +108,7 @@ def build_emiuet_compiled_timeline(
     return {
         "schema": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
-        "timeline_basis": "digitone_step",
+        "timeline_basis": timeline_basis,
         "clock": {
             "ppqn": ppqn,
             "original_tempo": original_tempo,
@@ -170,6 +171,42 @@ def emiuet_timeline_from_chord_events(
         ppqn=ppqn,
         original_tempo=float(performance_tempo),
         digitone_tempo=float(device_tempo),
+        meter=meter,
+        loop=loop,
+    )
+
+
+def clock_song_timeline_from_chords(
+    chords: list[str],
+    *,
+    ppqn: int = 24,
+    tempo: float = 120.0,
+    meter: str = "4/4",
+    loop: bool = True,
+) -> dict:
+    """Build an original-song timeline with one chord per bar.
+
+    This is the minimal Changes-side prototype for clock_song mode. It uses the
+    original bar grid, not the Digitone step grid.
+    """
+    numerator, denominator = (int(part) for part in meter.split("/", 1))
+    ticks_per_bar = int(ppqn * numerator * (4 / denominator))
+    steps = [
+        CompiledStepInput(
+            id=f"bar_{index + 1:03d}",
+            start_tick=index * ticks_per_bar,
+            end_tick=(index + 1) * ticks_per_bar,
+            chord=chord,
+            source_step_index=index,
+        )
+        for index, chord in enumerate(chords)
+    ]
+    return build_emiuet_compiled_timeline(
+        steps,
+        timeline_basis="original_song",
+        ppqn=ppqn,
+        original_tempo=tempo,
+        digitone_tempo=None,
         meter=meter,
         loop=loop,
     )
