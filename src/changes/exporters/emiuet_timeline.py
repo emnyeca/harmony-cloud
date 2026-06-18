@@ -30,6 +30,7 @@ from ..note import semitone_to_pitch_class
 
 SCHEMA_NAME = "emnyeca.emiuet_session.compiled_timeline"
 SCHEMA_VERSION = 2
+TIMELINE_BASIS_VALUES = frozenset({"original_song", "segment_map", "digitone_step"})
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ def _progression_context(symbols: list[str], index: int) -> dict:
 def build_emiuet_compiled_timeline(
     steps: list[CompiledStepInput],
     *,
+    timeline_basis: str = "digitone_step",
     ppqn: int = 24,
     original_tempo: float | None = None,
     digitone_tempo: float | None = None,
@@ -81,6 +83,8 @@ def build_emiuet_compiled_timeline(
     loop: bool = True,
 ) -> dict:
     """compile 済み step 列から Emiuet Session compiled timeline dict を生成する。"""
+    if timeline_basis not in TIMELINE_BASIS_VALUES:
+        raise ValueError(f"unsupported timeline_basis: {timeline_basis!r}")
     symbols = [s.chord for s in steps]
     out_steps: list[dict] = []
     for index, step in enumerate(steps):
@@ -107,7 +111,7 @@ def build_emiuet_compiled_timeline(
     return {
         "schema": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
-        "timeline_basis": "digitone_step",
+        "timeline_basis": timeline_basis,
         "clock": {
             "ppqn": ppqn,
             "original_tempo": original_tempo,
@@ -170,6 +174,74 @@ def emiuet_timeline_from_chord_events(
         ppqn=ppqn,
         original_tempo=float(performance_tempo),
         digitone_tempo=float(device_tempo),
+        meter=meter,
+        loop=loop,
+    )
+
+
+def clock_song_timeline_from_chords(
+    chords: list[str],
+    *,
+    beats_per_chord: float = 4.0,
+    ppqn: int = 24,
+    tempo: float = 120.0,
+    meter: str = "4/4",
+    loop: bool = True,
+) -> dict:
+    """Build an original-song timeline with one chord per bar.
+
+    This is the minimal Changes-side prototype for clock_song mode. It uses the
+    original bar grid, not the Digitone step grid.
+    """
+    if beats_per_chord <= 0:
+        raise ValueError("beats_per_chord must be positive")
+    ticks_per_chord = int(round(ppqn * beats_per_chord))
+    steps = [
+        CompiledStepInput(
+            id=f"bar_{index + 1:03d}",
+            start_tick=index * ticks_per_chord,
+            end_tick=(index + 1) * ticks_per_chord,
+            chord=chord,
+            source_step_index=index,
+        )
+        for index, chord in enumerate(chords)
+    ]
+    return build_emiuet_compiled_timeline(
+        steps,
+        timeline_basis="original_song",
+        ppqn=ppqn,
+        original_tempo=tempo,
+        digitone_tempo=None,
+        meter=meter,
+        loop=loop,
+    )
+
+
+def manual_timeline_from_chords(
+    chords: list[str],
+    *,
+    ppqn: int = 24,
+    tempo: float = 120.0,
+    meter: str = "4/4",
+    loop: bool = True,
+) -> dict:
+    """Build a segment-map timeline for manual advance selection."""
+    steps = [
+        CompiledStepInput(
+            id=f"segment_{index + 1:03d}",
+            start_tick=index,
+            end_tick=index + 1,
+            chord=chord,
+            source_step_index=index,
+        )
+        for index, chord in enumerate(chords)
+    ]
+    return build_emiuet_compiled_timeline(
+        steps,
+        timeline_basis="segment_map",
+        ppqn=ppqn,
+        original_tempo=tempo,
+        digitone_tempo=None,
         meter=meter,
         loop=loop,
     )

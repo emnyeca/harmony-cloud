@@ -1,6 +1,7 @@
 """Command-line interface for Changes export tools."""
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -25,6 +26,7 @@ from .pipeline_digitone import (
 from .voicing import progression_to_voicings
 from .voice_leading import generate_voice_leading
 from .midi_writer import write_midi
+from .exporters.emiuet_session_library import build_contrast_demo_session_artifacts
 
 
 def _create_mido_backend() -> MidoMidiBackend:
@@ -75,6 +77,7 @@ def _print_export_group_help() -> None:
     print()
     print("Available export commands:")
     print("  digitone-product  Export Cloud/Bass/Chord artifacts for Digitone II Tracks 1-8")
+    print("  emiuet-session-demo  Export developer Emiuet Session demo payload artifacts")
 
 
 def _print_send_group_help() -> None:
@@ -274,6 +277,32 @@ def _run_digitone_product_export_cli(argv: list[str]) -> None:
         print(f"  {key}: {path}")
 
 
+def _run_emiuet_session_demo_export_cli(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(
+        description="Export developer Emiuet Session demo SongPayload and LibraryIndex JSON"
+    )
+    parser.add_argument("--output-dir", required=True, help="Output directory for JSON artifacts")
+    args = parser.parse_args(argv)
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = build_contrast_demo_session_artifacts()
+    paths = {
+        "compiled_timeline": output_dir / "contrast_demo.digitone_step.timeline.json",
+        "song_payload": output_dir / "contrast_demo.song.json",
+        "library_index": output_dir / "library_index.json",
+    }
+    for key, path in paths.items():
+        path.write_text(
+            json.dumps(artifacts[key], ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    print("Wrote Emiuet Session demo artifacts:")
+    for key, path in paths.items():
+        print(f"  {key}: {path}")
+
+
 def _run_export_group_cli(argv: list[str]) -> None:
     if not argv or argv[0] in {"-h", "--help"}:
         _print_export_group_help()
@@ -281,6 +310,10 @@ def _run_export_group_cli(argv: list[str]) -> None:
 
     if argv[0] == "digitone-product":
         _run_digitone_product_export_cli(argv[1:])
+        return
+
+    if argv[0] == "emiuet-session-demo":
+        _run_emiuet_session_demo_export_cli(argv[1:])
         return
 
     raise SystemExit(f"Unknown export command: {argv[0]}")
