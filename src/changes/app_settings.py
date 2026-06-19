@@ -89,6 +89,14 @@ class AppSettings:
             str(Path.home() / "EUBChanges" / "ai-evaluation.jsonl"),
         )
     )
+    # Failures that never reach the editor (bad JSON, out-of-vocabulary chords,
+    # pipeline rejections, Ollama errors) are logged here for later improvement.
+    ai_failure_log_path: str = field(
+        default_factory=lambda: _env_str(
+            "EUB_CHANGES_AI_FAILURE_LOG_PATH",
+            str(Path.home() / "EUBChanges" / "ai-generation-failures.jsonl"),
+        )
+    )
 
 
 def _migrate_raw(raw: dict[str, Any]) -> dict[str, Any]:

@@ -419,7 +419,11 @@ def _run_ai_generation() -> bool:
     state: EditorState = st.session_state.editor
     user_prompt = (state.title or st.session_state.get("editor_title") or "").strip()
     try:
-        result = generate_harmony_from_ollama(user_prompt, _ai_settings(settings))
+        result = generate_harmony_from_ollama(
+            user_prompt,
+            _ai_settings(settings),
+            failure_log_path=getattr(settings, "ai_failure_log_path", "") or None,
+        )
         _apply_ai_generation_result(result)
         return True
     except AiGenerationError as exc:
@@ -2570,6 +2574,14 @@ def _render_settings() -> None:
     )
     if new_eval_log_path != getattr(settings, "ai_eval_log_path", ""):
         settings.ai_eval_log_path = new_eval_log_path
+        changed = True
+    new_failure_log_path = st.text_input(
+        "Generation failure log path",
+        value=str(getattr(settings, "ai_failure_log_path", "")),
+        key="_s_ai_failure_log_path",
+    )
+    if new_failure_log_path != getattr(settings, "ai_failure_log_path", ""):
+        settings.ai_failure_log_path = new_failure_log_path
         changed = True
 
     lib_col, browse_col = st.columns([4, 1], vertical_alignment="bottom")
