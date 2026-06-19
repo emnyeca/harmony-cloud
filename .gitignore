@@ -28,7 +28,9 @@ docs/assets/adobe/
 # Memo
 docs/NyekaMemo.md
 
+# Outputs
 out
+/exports
 
 # Large sample ZIPs (real song data — not tracked; use local_samples/ instead)
 examples/musicXML/ireal-musicxml/*.zip
