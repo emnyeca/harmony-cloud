@@ -26,6 +26,16 @@ def _env_str(name: str, default: str) -> str:
     return value if value is not None else default
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 @dataclass
 class AppSettings:
     library_path: str = field(default_factory=lambda: str(LIBRARY_PATH))
@@ -66,6 +76,9 @@ class AppSettings:
     )
     ollama_model_name: str = field(
         default_factory=lambda: _env_str("EUB_CHANGES_OLLAMA_MODEL", "llama3.1")
+    )
+    ai_generation_max_validation_retries: int = field(
+        default_factory=lambda: _env_int("EUB_CHANGES_AI_MAX_VALIDATION_RETRIES", 1)
     )
     ai_eval_ui_enabled: bool = field(
         default_factory=lambda: _env_bool("EUB_CHANGES_AI_EVAL_UI", False)

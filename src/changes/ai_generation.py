@@ -84,6 +84,7 @@ class AiGenerationSettings:
     enabled: bool
     endpoint: str
     model_name: str
+    max_validation_retries: int = 1
 
 
 @dataclass(frozen=True)
@@ -173,8 +174,24 @@ def generate_harmony_from_ollama(
     if not settings.enabled:
         raise AiGenerationError("AI generation is disabled in settings.")
 
+    max_retries = max(0, int(settings.max_validation_retries))
     raw = _call_ollama(user_prompt, settings, timeout_seconds=timeout_seconds)
-    return result_from_json_text(raw, user_prompt=user_prompt, model_name=settings.model_name)
+    for attempt in range(max_retries + 1):
+        try:
+            return result_from_json_text(raw, user_prompt=user_prompt, model_name=settings.model_name)
+        except AiGenerationError as exc:
+            if attempt >= max_retries:
+                raise
+            raw = _call_ollama(
+                user_prompt,
+                settings,
+                timeout_seconds=timeout_seconds,
+                retry_context={
+                    "previous_output": raw,
+                    "error": str(exc),
+                },
+            )
+    raise AiGenerationError("AI generation failed after validation retry.")
 
 
 def result_from_json_text(
@@ -397,9 +414,10 @@ def _validate_generated_song_pipeline(song: SongModel) -> None:
             try:
                 _compile_generated_song(probe)
             except Exception as chord_exc:
+                quality = _normalized_quality_for_error(symbol)
                 raise AiGenerationError(
                     "Chord failed pipeline validation at compile_song_for_ui: "
-                    f"{symbol}: {chord_exc}"
+                    f"{symbol} (normalized quality: {quality}): {chord_exc}"
                 ) from chord_exc
         raise AiGenerationError(
             "Generated song failed pipeline validation at compile_song_for_ui: "
@@ -412,6 +430,13 @@ def _compile_generated_song(song: SongModel) -> None:
     from changes.ui_pipeline import compile_song_for_ui
 
     compile_song_for_ui(song, AppSettings())
+
+
+def _normalized_quality_for_error(symbol: str) -> str:
+    try:
+        return parse_chord_core(symbol).normalized_quality
+    except Exception:
+        return "unreadable"
 
 
 def _song_chord_symbols(song: SongModel) -> tuple[str, ...]:
@@ -486,11 +511,20 @@ def _call_ollama(
     settings: AiGenerationSettings,
     *,
     timeout_seconds: float,
+    retry_context: dict[str, str] | None = None,
 ) -> str:
     endpoint = settings.endpoint.rstrip("/")
     body = {
         "model": settings.model_name,
-        "prompt": _build_prompt(user_prompt),
+        "prompt": (
+            _build_retry_prompt(
+                user_prompt,
+                previous_output=retry_context["previous_output"],
+                validation_error=retry_context["error"],
+            )
+            if retry_context is not None
+            else _build_prompt(user_prompt)
+        ),
         "stream": False,
         "format": "json",
         "think": False,
@@ -638,6 +672,30 @@ Format example only. This is not a musical recommendation:
 }}
 
 Slash bass chords with note basses are allowed when musically useful. Beats must be positive and should normally complete whole bars in the meter.
+/no_think"""
+
+
+def _build_retry_prompt(user_prompt: str, *, previous_output: str, validation_error: str) -> str:
+    title = (user_prompt or "").strip() or "Untitled harmony sketch"
+    return f"""{_build_prompt(user_prompt)}
+
+Previous output was rejected.
+
+Rejected output:
+{previous_output}
+
+Validation failure:
+{validation_error}
+
+Regeneration rules:
+- Previous output was rejected.
+- The chord `Dm9(b5)` is not allowed.
+- Use only AI_SAFE_CHORD_QUALITIES: {_AI_SAFE_CHORD_QUALITY_PROMPT}.
+- Do not invent combined qualities such as `m9(b5)`.
+- If b5 minor is intended, use `m7b5`.
+- If minor 9 is intended, use `m9`.
+- Keep the title close to: {title}
+- Return JSON only.
 /no_think"""
 
 

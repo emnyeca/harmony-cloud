@@ -10,6 +10,7 @@ from changes.ai_generation import (
     AiGenerationSettings,
     AiGenerationError,
     _build_prompt,
+    _build_retry_prompt,
     append_evaluation_log,
     ensure_ollama_ready,
     generate_harmony_from_ollama,
@@ -236,6 +237,86 @@ def test_build_prompt_uses_neutral_schema_example_and_light_prompt_guidance() ->
     assert "90-150 BPM" in prompt
     assert "48-72 BPM is allowed" in prompt
     assert "Cmaj7(#11)" not in prompt.split("Format example only.", 1)[1]
+
+
+def test_build_retry_prompt_includes_rejected_chord_guidance() -> None:
+    prompt = _build_retry_prompt(
+        "x",
+        previous_output='{"progression":[{"chord":"Dm9(b5)","beats":4}]}',
+        validation_error=(
+            "Chord failed AI pipeline vocabulary validation: "
+            "Dm9(b5) -> Dm9(b5) (normalized quality: m9(b5))"
+        ),
+    )
+
+    assert "Previous output was rejected." in prompt
+    assert "The chord `Dm9(b5)` is not allowed." in prompt
+    assert "Use only AI_SAFE_CHORD_QUALITIES" in prompt
+    assert "Do not invent combined qualities such as `m9(b5)`." in prompt
+    assert "If b5 minor is intended, use `m7b5`." in prompt
+    assert "If minor 9 is intended, use `m9`." in prompt
+    assert "normalized quality: m9(b5)" in prompt
+
+
+def test_generate_harmony_retries_once_after_validation_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    invalid_payload = _payload()
+    invalid_payload["progression"] = [{"chord": "Dm9(b5)", "beats": 4}]
+    valid_payload = _payload()
+    valid_payload["progression"] = [{"chord": "Dm9", "beats": 4}]
+    responses = [
+        json.dumps(invalid_payload, ensure_ascii=False),
+        json.dumps(valid_payload, ensure_ascii=False),
+    ]
+    retry_contexts: list[dict[str, str] | None] = []
+
+    def fake_call_ollama(
+        user_prompt: str,
+        settings: AiGenerationSettings,
+        *,
+        timeout_seconds: float,
+        retry_context: dict[str, str] | None = None,
+    ) -> str:
+        retry_contexts.append(retry_context)
+        return responses.pop(0)
+
+    monkeypatch.setattr("changes.ai_generation._call_ollama", fake_call_ollama)
+
+    result = generate_harmony_from_ollama(
+        "retry me",
+        AiGenerationSettings(True, "http://localhost:11434", "test-model", max_validation_retries=1),
+    )
+
+    assert result.song.measures[0].harmony[0].symbol == "Dm9"
+    assert retry_contexts[0] is None
+    assert retry_contexts[1] is not None
+    assert "Dm9(b5) -> Dm9(b5)" in retry_contexts[1]["error"]
+    assert "normalized quality: m9(b5)" in retry_contexts[1]["error"]
+
+
+def test_generate_harmony_reports_validation_error_after_retry_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    invalid_payload = _payload()
+    invalid_payload["progression"] = [{"chord": "Dm9(b5)", "beats": 4}]
+    calls = 0
+
+    def fake_call_ollama(
+        user_prompt: str,
+        settings: AiGenerationSettings,
+        *,
+        timeout_seconds: float,
+        retry_context: dict[str, str] | None = None,
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        return json.dumps(invalid_payload, ensure_ascii=False)
+
+    monkeypatch.setattr("changes.ai_generation._call_ollama", fake_call_ollama)
+
+    with pytest.raises(AiGenerationError, match=r"Dm9\(b5\).*normalized quality: m9\(b5\)"):
+        generate_harmony_from_ollama(
+            "retry me",
+            AiGenerationSettings(True, "http://localhost:11434", "test-model", max_validation_retries=1),
+        )
+    assert calls == 2
 
 
 def test_append_evaluation_log_writes_jsonl(tmp_path) -> None:

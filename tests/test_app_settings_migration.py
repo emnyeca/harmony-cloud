@@ -78,6 +78,7 @@ def test_save_load_ai_generation_settings(tmp_path: Path, monkeypatch: pytest.Mo
             ai_generation_enabled=False,
             ollama_endpoint="http://127.0.0.1:11434",
             ollama_model_name="qwen2.5",
+            ai_generation_max_validation_retries=2,
             ai_eval_ui_enabled=True,
             ai_eval_log_path=str(tmp_path / "eval.jsonl"),
         )
@@ -87,6 +88,7 @@ def test_save_load_ai_generation_settings(tmp_path: Path, monkeypatch: pytest.Mo
     assert loaded.ai_generation_enabled is False
     assert loaded.ollama_endpoint == "http://127.0.0.1:11434"
     assert loaded.ollama_model_name == "qwen2.5"
+    assert loaded.ai_generation_max_validation_retries == 2
     assert loaded.ai_eval_ui_enabled is True
     assert loaded.ai_eval_log_path == str(tmp_path / "eval.jsonl")
 

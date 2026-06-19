@@ -371,6 +371,7 @@ def _ai_settings(settings: AppSettings) -> AiGenerationSettings:
         enabled=bool(getattr(settings, "ai_generation_enabled", False)),
         endpoint=str(getattr(settings, "ollama_endpoint", "http://localhost:11434")),
         model_name=str(getattr(settings, "ollama_model_name", "llama3.1")),
+        max_validation_retries=int(getattr(settings, "ai_generation_max_validation_retries", 1)),
     )
 
 
@@ -2512,7 +2513,7 @@ def _render_settings() -> None:
     # ── Library path ──────────────────────────────────────────────────────────
     st.divider()
     st.subheader("Emnyeca Harmony AI")
-    ai_cols = st.columns([1.2, 2, 2, 1.4], vertical_alignment="bottom")
+    ai_cols = st.columns([1.2, 2, 2, 1.2, 1.4], vertical_alignment="bottom")
     with ai_cols[0]:
         new_ai_enabled = _toggle(
             "AI Generate",
@@ -2542,6 +2543,18 @@ def _render_settings() -> None:
             changed = True
         st.caption("Restart EUB Changes after changing the model name.")
     with ai_cols[3]:
+        new_retry_count = st.number_input(
+            "Validation retries",
+            min_value=0,
+            max_value=3,
+            value=int(getattr(settings, "ai_generation_max_validation_retries", 1)),
+            step=1,
+            key="_s_ai_generation_max_validation_retries",
+        )
+        if int(new_retry_count) != int(getattr(settings, "ai_generation_max_validation_retries", 1)):
+            settings.ai_generation_max_validation_retries = int(new_retry_count)
+            changed = True
+    with ai_cols[4]:
         new_eval_ui = _toggle(
             "Eval UI",
             "_s_ai_eval_ui_enabled",
