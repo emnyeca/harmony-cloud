@@ -33,6 +33,46 @@ def test_parse_chord_core_normalizes_7alt_to_alt():
     assert core.special_semantic_tag == "alt"
 
 
+@pytest.mark.parametrize("symbol", ["Eb6/9", "C6/9", "F6/9"])
+def test_parse_chord_core_accepts_major_six_nine(symbol: str):
+    core = parse_chord_core(symbol)
+
+    assert core.quality == "6/9"
+    assert core.normalized_quality == "6/9"
+    assert core.base_quality == "major"
+    assert core.extensions == frozenset({"6", "9"})
+    assert core.added_degrees == frozenset({"6", "9"})
+    assert core.slash_bass is None
+
+
+@pytest.mark.parametrize("symbol", ["Cm6/9", "Am6/9"])
+def test_parse_chord_core_accepts_minor_six_nine(symbol: str):
+    core = parse_chord_core(symbol)
+
+    assert core.quality == "m6/9"
+    assert core.normalized_quality == "m6/9"
+    assert core.base_quality == "minor"
+    assert core.extensions == frozenset({"6", "9"})
+    assert core.added_degrees == frozenset({"6", "9"})
+    assert core.slash_bass is None
+
+
+def test_parse_chord_core_keeps_slash_bass_after_six_nine():
+    core = parse_chord_core("C6/9/E")
+
+    assert core.quality == "6/9"
+    assert core.slash_bass == "E"
+    assert core.slash_bass_pc == 4
+
+
+def test_parse_chord_core_keeps_plain_slash_chord():
+    core = parse_chord_core("C/E")
+
+    assert core.quality == ""
+    assert core.slash_bass == "E"
+    assert core.slash_bass_pc == 4
+
+
 def test_parse_chord_core_accepts_parenthesized_dominant_tensions():
     core = parse_chord_core("G7(b9,#11)")
 
@@ -64,6 +104,28 @@ def test_construct_chord_cmaj7_uses_symbol_tones_plus_collection_tensions():
     assert result.automatic_tension_intervals == (2, 9)
     assert result.automatic_tension_pitch_classes == (2, 9)
     assert result.final_pitch_classes == (0, 4, 7, 11, 2, 9)
+
+
+def test_construct_chord_c_six_nine_uses_major_triad_sixth_and_ninth():
+    core = parse_chord_core("C6/9")
+    selected = _selected_collection(0, 2, 4, 7, 9)
+
+    result = construct_chord_pitch_classes(core, selected)
+
+    assert result.mandatory_intervals == (0, 4, 7, 9, 2)
+    assert result.mandatory_pitch_classes == (0, 4, 7, 9, 2)
+    assert result.final_pitch_classes == (0, 4, 7, 9, 2)
+
+
+def test_construct_chord_c_minor_six_nine_uses_minor_triad_sixth_and_ninth():
+    core = parse_chord_core("Cm6/9")
+    selected = _selected_collection(0, 2, 3, 7, 9)
+
+    result = construct_chord_pitch_classes(core, selected)
+
+    assert result.mandatory_intervals == (0, 3, 7, 9, 2)
+    assert result.mandatory_pitch_classes == (0, 3, 7, 9, 2)
+    assert result.final_pitch_classes == (0, 3, 7, 9, 2)
 
 
 def test_construct_chord_c7b9_preserves_explicit_b9():

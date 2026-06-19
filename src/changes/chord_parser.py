@@ -54,6 +54,7 @@ _QUALITY_PATTERNS = (
     "maj7",
     "m9",
     "m7",
+    "m6/9",
     "m6",
     "aug7",
     "dim",
@@ -64,6 +65,7 @@ _QUALITY_PATTERNS = (
     "11",
     "9",
     "7",
+    "6/9",
     "6",
     "5",
     "",
@@ -72,9 +74,10 @@ _CHORD_RE = re.compile(
     r"^(?P<root>[A-G](?:#|b)?)(?P<quality>" + "|".join(_QUALITY_PATTERNS) + r")$"
 )
 _PAREN_CHORD_RE = re.compile(
-    r"^(?P<root>[A-G](?:#|b)?)(?P<base>maj7|maj9|maj13|mMaj7|m7b5|m11|m9|m7|m|13|11|9|7|6|5|dim7|dim|aug|alt)?"
+    r"^(?P<root>[A-G](?:#|b)?)(?P<base>maj7|maj9|maj13|mMaj7|m7b5|m11|m9|m7|m6/9|m6|m|13|11|9|7|6/9|6|5|dim7|dim|aug|alt)?"
     r"\((?P<tensions>[^)]+)\)$"
 )
+_SLASH_BASS_RE = re.compile(r"^[A-G](?:#|b)?$")
 
 
 _QUALITY_MODEL: dict[str, dict] = {
@@ -182,6 +185,24 @@ _QUALITY_MODEL: dict[str, dict] = {
         "seventh_type": "maj7",
         "extensions": frozenset({"7", "9"}),
         "added_degrees": frozenset({"9"}),
+        "altered_degrees": frozenset(),
+        "omitted_degrees": frozenset(),
+        "special_semantic_tag": None,
+    },
+    "6/9": {
+        "base_quality": "major",
+        "seventh_type": None,
+        "extensions": frozenset({"6", "9"}),
+        "added_degrees": frozenset({"6", "9"}),
+        "altered_degrees": frozenset(),
+        "omitted_degrees": frozenset(),
+        "special_semantic_tag": None,
+    },
+    "m6/9": {
+        "base_quality": "minor",
+        "seventh_type": None,
+        "extensions": frozenset({"6", "9"}),
+        "added_degrees": frozenset({"6", "9"}),
         "altered_degrees": frozenset(),
         "omitted_degrees": frozenset(),
         "special_semantic_tag": None,
@@ -423,6 +444,16 @@ def _parse_root_and_quality(text: str) -> tuple[str, str]:
     return m.group("root"), m.group("quality")
 
 
+def _split_slash_bass(text: str) -> tuple[str, str | None]:
+    if "/" not in text:
+        return text, None
+    left, right = text.rsplit("/", 1)
+    right = right.strip()
+    if _SLASH_BASS_RE.match(right):
+        return left.strip(), right
+    return text, None
+
+
 def _parse_parenthesized_quality(text: str) -> tuple[str, str, dict] | None:
     m = _PAREN_CHORD_RE.match(text)
     if not m:
@@ -472,10 +503,7 @@ def _parse_parenthesized_quality(text: str) -> tuple[str, str, dict] | None:
 
 def parse_chord_core(chord: str) -> ChordSymbolCore:
     text = str(chord).strip()
-    left, slash = text, None
-    if "/" in text:
-        left, slash = text.split("/", 1)
-        slash = slash.strip() or None
+    left, slash = _split_slash_bass(text)
 
     parenthesized = _parse_parenthesized_quality(left.strip())
     if parenthesized is None:

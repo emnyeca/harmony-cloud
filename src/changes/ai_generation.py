@@ -29,6 +29,7 @@ _AI_ALTERATION_RE = re.compile(r"[#b](?:5|9|11|13)")
 _AI_ALT_EXPLICIT_ALTERATION_RE = re.compile(
     r"^(?P<root>[A-G](?:#|b)?)(?P<body>.*alt.*[#b](?:5|9|11|13).*|.*[#b](?:5|9|11|13).*alt.*)$"
 )
+_AI_MINOR_ALIAS_RE = re.compile(r"^(?P<root>[A-G](?:#|b)?)(?:minor|min)(?P<rest>.*)$")
 
 
 class AiGenerationError(RuntimeError):
@@ -276,6 +277,7 @@ def song_and_editor_from_payload(
 
 def normalize_ai_chord_symbol(symbol: str) -> str:
     text = str(symbol).strip()
+    text = _normalize_ai_minor_alias(text)
     _validate_ai_alt_not_mixed_with_explicit_alterations(text)
     if "(" in text or ")" in text:
         return _normalize_parenthesized_ai_chord_symbol(text)
@@ -294,6 +296,18 @@ def normalize_ai_chord_symbol(symbol: str) -> str:
     if not alterations or "".join(alterations) != match.group("alterations"):
         return text
     return f"{match.group('root')}{match.group('base')}({','.join(alterations)}){slash}"
+
+
+def _normalize_ai_minor_alias(symbol: str) -> str:
+    slash = ""
+    main = symbol
+    if "/" in symbol:
+        main, slash_part = symbol.split("/", 1)
+        slash = f"/{slash_part.strip()}"
+    match = _AI_MINOR_ALIAS_RE.match(main.strip())
+    if not match:
+        return symbol
+    return f"{match.group('root')}m{match.group('rest')}{slash}"
 
 
 def _validate_ai_alt_not_mixed_with_explicit_alterations(symbol: str) -> None:

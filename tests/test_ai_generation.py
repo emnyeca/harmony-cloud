@@ -85,6 +85,21 @@ def test_normalize_ai_chord_symbol_for_parser_readable_tensions(raw: str, expect
     assert normalize_ai_chord_symbol(raw) == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Ebmin6", "Ebm6"),
+        ("Cmin7", "Cm7"),
+        ("Fmin9", "Fm9"),
+        ("Bbmin11", "Bbm11"),
+        ("AminMaj7", "AmMaj7"),
+        ("Ebminor6", "Ebm6"),
+    ],
+)
+def test_normalize_ai_chord_symbol_converts_minor_aliases(raw: str, expected: str) -> None:
+    assert normalize_ai_chord_symbol(raw) == expected
+
+
 @pytest.mark.parametrize("raw", ["G7alt", "G7(b13)", "G7(b9,#11)"])
 def test_normalize_ai_chord_symbol_allows_alt_or_explicit_alterations(raw: str) -> None:
     assert normalize_ai_chord_symbol(raw) == raw
@@ -115,6 +130,26 @@ def test_result_from_json_text_stores_normalized_ai_chords() -> None:
 
     assert result.song.measures[0].harmony[0].symbol == "G7(b9,#11)"
     assert result.editor_state.cells == ["G7(b9,#11)", "|"]
+
+
+def test_result_from_json_text_stores_normalized_minor_alias() -> None:
+    payload = _payload()
+    payload["progression"] = [{"chord": "Ebmin6", "beats": 4}]
+
+    result = result_from_json_text(json.dumps(payload), user_prompt="x", model_name="test-model")
+
+    assert result.song.measures[0].harmony[0].symbol == "Ebm6"
+    assert result.editor_state.cells == ["Ebm6", "|"]
+
+
+def test_result_from_json_text_accepts_six_nine_quality() -> None:
+    payload = _payload()
+    payload["progression"] = [{"chord": "Eb6/9", "beats": 4}]
+
+    result = result_from_json_text(json.dumps(payload), user_prompt="x", model_name="test-model")
+
+    assert result.song.measures[0].harmony[0].symbol == "Eb6/9"
+    assert result.editor_state.cells == ["Eb6/9", "|"]
 
 
 def test_append_evaluation_log_writes_jsonl(tmp_path) -> None:
