@@ -17,6 +17,14 @@ from typing import Literal
 
 import streamlit as st
 
+from changes.ai_generation import (
+    AiGenerationError,
+    AiGenerationResult,
+    AiGenerationSettings,
+    append_evaluation_log,
+    ensure_ollama_ready,
+    generate_harmony_from_ollama,
+)
 from changes.app_settings import AppSettings, load_settings, save_settings
 from changes.editor import EditorState, editor_to_song_model
 from changes.key_signature import format_working_key, parse_working_key_display
@@ -226,6 +234,11 @@ def _ss_init() -> None:
         ("_import_progress_request", None), ("_import_progress_status", None),
         ("_import_uploader_reset_token", 0),
         ("_send_confirm_mode", None),
+        ("_ai_generation_pending_discard", False),
+        ("_ai_generation_last_result", None),
+        ("_ai_generation_last_error", None),
+        ("_ai_generation_eval_rating", None),
+        ("_pending_editor_widget_values", None),
         # Action-specific isolated result state
         ("_send_area_ok", False), ("_send_area_ok_detail", None),
         ("_send_area_error", None),
@@ -240,6 +253,7 @@ def _ss_init() -> None:
     for key, default in _PREVIEW_STATE_KEYS:
         if key not in st.session_state:
             st.session_state[key] = default
+    _apply_pending_editor_widget_values()
 
 
 def _refresh_library() -> None:
@@ -328,6 +342,123 @@ def _render_pending_ui_messages() -> None:
     err = st.session_state.pop("_ui_error_message", None)
     if err:
         st.error(str(err))
+
+
+def _queue_editor_widget_sync(state: EditorState) -> None:
+    meter_parts = state.meter.split("/", 1)
+    meter_num = int(meter_parts[0]) if len(meter_parts) == 2 else 4
+    meter_den = int(meter_parts[1]) if len(meter_parts) == 2 else 4
+    st.session_state["_pending_editor_widget_values"] = {
+        "editor_title": state.title,
+        "editor_tempo": state.tempo,
+        "meter_num": meter_num,
+        "meter_den": meter_den,
+        "working_key_input": state.working_key,
+    }
+
+
+def _apply_pending_editor_widget_values() -> None:
+    pending = st.session_state.get("_pending_editor_widget_values")
+    if not pending:
+        return
+    for key, value in dict(pending).items():
+        st.session_state[key] = value
+    st.session_state["_pending_editor_widget_values"] = None
+
+
+def _ai_settings(settings: AppSettings) -> AiGenerationSettings:
+    return AiGenerationSettings(
+        enabled=bool(getattr(settings, "ai_generation_enabled", False)),
+        endpoint=str(getattr(settings, "ollama_endpoint", "http://localhost:11434")),
+        model_name=str(getattr(settings, "ollama_model_name", "llama3.1")),
+    )
+
+
+def _ensure_ollama_for_ai_startup() -> None:
+    settings: AppSettings = st.session_state._settings
+    ai_settings = _ai_settings(settings)
+    if not ai_settings.enabled:
+        return
+    bootstrap_key = "_ollama_bootstrap_model"
+    status_key = "_ollama_bootstrap_status"
+    if st.session_state.get(bootstrap_key) == ai_settings.model_name:
+        return
+    with st.spinner(f"Preparing Ollama model: {ai_settings.model_name}"):
+        status = ensure_ollama_ready(ai_settings)
+    st.session_state[bootstrap_key] = ai_settings.model_name
+    st.session_state[status_key] = status
+
+
+def _sync_editor_title() -> None:
+    state: EditorState = st.session_state.editor
+    new_title = str(st.session_state.get("editor_title") or "")
+    if new_title != state.title:
+        state.title = new_title
+        st.session_state._editor_dirty = True
+        st.session_state._dirty_song_override = None
+        st.session_state._dirty_song_override_cells = None
+
+
+def _apply_ai_generation_result(result: AiGenerationResult) -> None:
+    st.session_state.editor = result.editor_state
+    _queue_editor_widget_sync(result.editor_state)
+    st.session_state._editor_working_key_mode = None
+    st.session_state._editor_dirty = True
+    st.session_state._dirty_song_override = result.song
+    st.session_state._dirty_song_override_cells = tuple(result.editor_state.cells)
+    st.session_state._editor_section_labels = {"initial": "A__OCC1"}
+    st.session_state._ai_generation_last_result = result
+    st.session_state._ai_generation_last_error = None
+    st.session_state._ai_generation_eval_rating = None
+    _clear_section_filter_state()
+
+
+def _run_ai_generation() -> bool:
+    settings: AppSettings = st.session_state._settings
+    state: EditorState = st.session_state.editor
+    user_prompt = (state.title or st.session_state.get("editor_title") or "").strip()
+    try:
+        result = generate_harmony_from_ollama(user_prompt, _ai_settings(settings))
+        _apply_ai_generation_result(result)
+        return True
+    except AiGenerationError as exc:
+        st.session_state._ai_generation_last_error = str(exc)
+        st.session_state._ui_error_message = str(exc)
+        return False
+    except Exception as exc:
+        message = f"AI generation failed: {exc}"
+        st.session_state._ai_generation_last_error = message
+        st.session_state._ui_error_message = message
+        return False
+
+
+def _request_ai_generation() -> None:
+    if st.session_state.get("_editor_dirty"):
+        st.session_state._ai_generation_pending_discard = True
+        _request_rerun()
+        return
+    with st.spinner("Generating harmony with Ollama..."):
+        ok = _run_ai_generation()
+    if ok:
+        _request_rerun(success_message="Generated harmony is now in Dirty state.")
+    else:
+        _request_rerun()
+
+
+def _write_ai_eval(decision: str) -> None:
+    settings: AppSettings = st.session_state._settings
+    result: AiGenerationResult | None = st.session_state.get("_ai_generation_last_result")
+    rating = st.session_state.get("_ai_generation_eval_rating")
+    append_evaluation_log(
+        getattr(settings, "ai_eval_log_path", ""),
+        user_prompt=result.user_prompt if result else str(st.session_state.get("editor_title") or ""),
+        generated_json=result.generated_json if result else None,
+        decision=decision,
+        rating=int(rating) if rating else None,
+        model_name=result.model_name if result else getattr(settings, "ollama_model_name", ""),
+        error=st.session_state.get("_ai_generation_last_error"),
+    )
+    st.session_state._ui_success_message = f"AI evaluation logged: {decision}"
 
 
 # ── Header data sources ───────────────────────────────────────────────────────
@@ -482,7 +613,8 @@ def _render_header() -> None:
     key = format_working_key(song.working_key, getattr(song, "working_key_mode", None)) if song else "—"
     tempo = str(int(song.performance_tempo)) if song else "—"
     meter = _song_meter_summary(song)
-    has_selected_song = st.session_state.get("_selected_path") is not None
+    has_selected_song = song is not None
+    settings: AppSettings = st.session_state._settings
 
     def _render_transpose_controls() -> None:
         down_col, up_col = st.columns([1,1], vertical_alignment="bottom", gap="small")
@@ -520,7 +652,24 @@ def _render_header() -> None:
         with song_col:
             _composer = getattr(song, "composer", None) if song else None
             _song_label = f"Song by {_composer}" if _composer else "Song"
-            _render_header_field(_song_label, ":material/library_music:", title, render_title=True, has_song=bool(song))
+            title_col, generate_col = st.columns([3, 1], vertical_alignment="bottom", gap="small")
+            with title_col:
+                if "editor_title" not in st.session_state:
+                    st.session_state.editor_title = st.session_state.editor.title
+                st.text_input(
+                    "Title",
+                    key="editor_title",
+                    label_visibility="collapsed",
+                    placeholder="Title / prompt",
+                    on_change=_sync_editor_title,
+                    icon=":material/library_music:",
+                )
+                st.caption(f"{_song_label}{'  *Dirty*' if st.session_state._editor_dirty else ''}")
+            with generate_col:
+                ai_enabled = bool(getattr(settings, "ai_generation_enabled", False))
+                if st.button("Generate", key="_ai_generate_btn", width="stretch", disabled=not ai_enabled):
+                    _request_ai_generation()
+                st.caption("Harmony AI" if ai_enabled else "AI off")
         with key_col:
             _render_header_field("Key", ":material/key:", key)
         with tempo_col:
@@ -529,6 +678,35 @@ def _render_header() -> None:
             _render_header_field("Meter", ":material/pie_chart:", meter)
         with transpose_col:
             _render_header_field("Transpose", ":material/piano:", render_controls=_render_transpose_controls)
+
+    if st.session_state.get("_ai_generation_last_error"):
+        st.error(str(st.session_state._ai_generation_last_error))
+    bootstrap_status = st.session_state.get("_ollama_bootstrap_status")
+    if bootstrap_status is not None and not getattr(bootstrap_status, "ok", False):
+        detail = getattr(bootstrap_status, "detail", None)
+        st.warning(
+            f"{getattr(bootstrap_status, 'message', 'Ollama is not ready.')}"
+            + (f"\n\n{detail}" if detail else "")
+        )
+    if bool(getattr(settings, "ai_eval_ui_enabled", False)):
+        result: AiGenerationResult | None = st.session_state.get("_ai_generation_last_result")
+        if result is not None or st.session_state.get("_ai_generation_last_error"):
+            ev1, ev2, ev3 = st.columns([1, 1, 2], vertical_alignment="bottom", gap="small")
+            if ev1.button("Use", key="_ai_eval_use", width="stretch", disabled=result is None):
+                _write_ai_eval("use")
+                _request_rerun()
+            if ev2.button("Reject", key="_ai_eval_reject", width="stretch"):
+                _write_ai_eval("reject")
+                _request_rerun()
+            ev3.select_slider(
+                "Rating",
+                options=[None, 1, 2, 3, 4, 5],
+                format_func=lambda x: "unrated" if x is None else str(x),
+                key="_ai_generation_eval_rating",
+            )
+
+    if st.session_state.get("_ai_generation_pending_discard"):
+        _dialog_ai_generation_discard()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -763,6 +941,25 @@ def _dialog_pending_deselect() -> None:
     if col_discard.button("Discard", type="primary", key="desel_discard", width="stretch"):
         _do_deselect_song()
         _request_rerun(reset_song_table=True)
+
+
+@st.dialog("Discard Unsaved Changes?", dismissible=False)
+def _dialog_ai_generation_discard() -> None:
+    if not st.session_state.get("_ai_generation_pending_discard"):
+        return
+    st.warning("Unsaved changes will be discarded before AI generation.")
+    col_cancel, col_discard = st.columns([1, 1], width="stretch", gap="small")
+    if col_cancel.button("Cancel", key="ai_gen_cancel", width="stretch"):
+        st.session_state._ai_generation_pending_discard = False
+        _request_rerun()
+    if col_discard.button("Discard and Generate", type="primary", key="ai_gen_discard", width="stretch"):
+        st.session_state._ai_generation_pending_discard = False
+        with st.spinner("Generating harmony with Ollama..."):
+            ok = _run_ai_generation()
+        if ok:
+            _request_rerun(success_message="Generated harmony is now in Dirty state.")
+        else:
+            _request_rerun()
 
 
 @st.dialog("Delete Song", dismissible=False)
@@ -1292,9 +1489,7 @@ def _load_song_into_editor(song: SongModel) -> None:
 
     st.session_state._editor_section_labels = section_labels
     st.session_state.editor = state
-    st.session_state.editor_title = state.title
-    st.session_state.editor_tempo = state.tempo
-    st.session_state.working_key_input = state.working_key
+    _queue_editor_widget_sync(state)
     st.session_state._editor_working_key_mode = song.working_key_mode
     st.session_state._editor_dirty = False
     st.session_state._dirty_song_override = None
@@ -2315,6 +2510,55 @@ def _render_settings() -> None:
             settings.confirm_before_hardware_write = new_confirm; changed = True
 
     # ── Library path ──────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Emnyeca Harmony AI")
+    ai_cols = st.columns([1.2, 2, 2, 1.4], vertical_alignment="bottom")
+    with ai_cols[0]:
+        new_ai_enabled = _toggle(
+            "AI Generate",
+            "_s_ai_generation_enabled",
+            bool(getattr(settings, "ai_generation_enabled", False)),
+        )
+        if new_ai_enabled != bool(getattr(settings, "ai_generation_enabled", False)):
+            settings.ai_generation_enabled = new_ai_enabled
+            changed = True
+    with ai_cols[1]:
+        new_endpoint = st.text_input(
+            "Ollama endpoint",
+            value=str(getattr(settings, "ollama_endpoint", "http://localhost:11434")),
+            key="_s_ollama_endpoint",
+        )
+        if new_endpoint != getattr(settings, "ollama_endpoint", ""):
+            settings.ollama_endpoint = new_endpoint
+            changed = True
+    with ai_cols[2]:
+        new_model = st.text_input(
+            "Ollama model",
+            value=str(getattr(settings, "ollama_model_name", "llama3.1")),
+            key="_s_ollama_model_name",
+        )
+        if new_model != getattr(settings, "ollama_model_name", ""):
+            settings.ollama_model_name = new_model
+            changed = True
+        st.caption("Restart EUB Changes after changing the model name.")
+    with ai_cols[3]:
+        new_eval_ui = _toggle(
+            "Eval UI",
+            "_s_ai_eval_ui_enabled",
+            bool(getattr(settings, "ai_eval_ui_enabled", False)),
+        )
+        if new_eval_ui != bool(getattr(settings, "ai_eval_ui_enabled", False)):
+            settings.ai_eval_ui_enabled = new_eval_ui
+            changed = True
+    new_eval_log_path = st.text_input(
+        "Evaluation log path",
+        value=str(getattr(settings, "ai_eval_log_path", "")),
+        key="_s_ai_eval_log_path",
+    )
+    if new_eval_log_path != getattr(settings, "ai_eval_log_path", ""):
+        settings.ai_eval_log_path = new_eval_log_path
+        changed = True
+
     lib_col, browse_col = st.columns([4, 1], vertical_alignment="bottom")
     with lib_col:
         new_lib_path = st.text_input("Library folder", value=settings.library_path, key="_s_lib_path", icon=":material/folder:")
@@ -2691,7 +2935,7 @@ def _render_section_filter(song: SongModel) -> None:
 def _render_preview_send() -> None:
     _sync_preview_state()
     song = _current_song()
-    has_selected_song = st.session_state.get("_selected_path") is not None
+    has_selected_song = song is not None
     settings: AppSettings = st.session_state._settings
 
     mode, section = st.columns([1,2], border=False, gap="medium", vertical_alignment="bottom")
@@ -3410,6 +3654,7 @@ def main() -> None:
     )
     st.markdown(_CSS, unsafe_allow_html=True)
     _ss_init()
+    _ensure_ollama_for_ai_startup()
     _render_pending_ui_messages()
     _render_header()
     _render_main()

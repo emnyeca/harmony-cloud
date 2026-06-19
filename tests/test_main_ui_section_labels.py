@@ -124,6 +124,34 @@ def test_playback_song_uses_selected_song_before_dirty_editor_regenerates_sectio
     assert main_ui._playback_song() is selected_song
 
 
+def test_load_song_queues_editor_widget_sync_after_header_widget_exists(monkeypatch) -> None:
+    song = SongModel(
+        title="Loaded Song",
+        working_key="D",
+        performance_tempo=96,
+        measures=(_measure(1, "Cmaj7", section_id="A__OCC1"),),
+    )
+    state = _SessionState(
+        {
+            "editor_title": "Already Instantiated",
+            "_section_filter_selected": {"old"},
+            "_sf_old": True,
+        }
+    )
+    monkeypatch.setattr(main_ui.st, "session_state", state)
+
+    main_ui._load_song_into_editor(song)
+
+    assert state["editor_title"] == "Already Instantiated"
+    assert state["_pending_editor_widget_values"]["editor_title"] == "Loaded Song"
+
+    main_ui._apply_pending_editor_widget_values()
+
+    assert state["editor_title"] == "Loaded Song"
+    assert state["editor_tempo"] == 96
+    assert state["working_key_input"] == "D"
+
+
 def test_run_send_respects_bundle_by_section(monkeypatch) -> None:
     calls: list[str] = []
     song = SongModel(title="Song", working_key="C", performance_tempo=120, measures=())

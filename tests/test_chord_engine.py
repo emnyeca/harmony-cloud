@@ -17,6 +17,42 @@ def test_parse_chord_core_normalizes_plain_sus4_to_dominant_sus4():
     assert core.normalized_quality == "7sus4"
 
 
+def test_parse_chord_core_accepts_major_sharp_eleven():
+    core = parse_chord_core("Emaj7#11")
+
+    assert core.quality == "maj7#11"
+    assert core.altered_degrees == frozenset({"#11"})
+
+
+def test_parse_chord_core_normalizes_7alt_to_alt():
+    core = parse_chord_core("B7alt")
+
+    assert core.quality == "7alt"
+    assert core.normalized_quality == "alt"
+    assert core.seventh_type == "b7"
+    assert core.special_semantic_tag == "alt"
+
+
+def test_parse_chord_core_accepts_parenthesized_dominant_tensions():
+    core = parse_chord_core("G7(b9,#11)")
+
+    assert core.root == "G"
+    assert core.quality == "7(b9,#11)"
+    assert core.seventh_type == "b7"
+    assert core.extensions == frozenset({"7", "9", "11"})
+    assert core.altered_degrees == frozenset({"b9", "#11"})
+
+
+def test_parse_chord_core_accepts_parenthesized_major_sharp_eleven():
+    core = parse_chord_core("Cmaj7(#11)")
+
+    assert core.root == "C"
+    assert core.quality == "maj7(#11)"
+    assert core.seventh_type == "maj7"
+    assert core.extensions == frozenset({"7", "11"})
+    assert core.altered_degrees == frozenset({"#11"})
+
+
 def test_construct_chord_cmaj7_uses_symbol_tones_plus_collection_tensions():
     core = parse_chord_core("Cmaj7")
     selected = _selected_collection(0, 2, 4, 5, 7, 9, 11)

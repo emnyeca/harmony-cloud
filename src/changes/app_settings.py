@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,18 @@ LIBRARY_PATH = Path.home() / "EUBChanges" / "library"
 # Settings are stored in a fixed user-level location independent of library_path,
 # so changing the library folder does not orphan the settings file.
 SETTINGS_PATH = Path.home() / ".eub_changes_settings.json"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_str(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    return value if value is not None else default
 
 
 @dataclass
@@ -43,6 +56,27 @@ class AppSettings:
     note_accidental: str = "flat"  # "flat" | "sharp"
     song_display_mode: str = "chord_cells"  # "chord_cells" | "cloud_graph"
 
+    # Local AI generation beta. Defaults can be overridden by environment and
+    # then persisted through the normal settings file.
+    ai_generation_enabled: bool = field(
+        default_factory=lambda: _env_bool("EUB_CHANGES_AI_GENERATION_ENABLED", True)
+    )
+    ollama_endpoint: str = field(
+        default_factory=lambda: _env_str("EUB_CHANGES_OLLAMA_ENDPOINT", "http://localhost:11434")
+    )
+    ollama_model_name: str = field(
+        default_factory=lambda: _env_str("EUB_CHANGES_OLLAMA_MODEL", "llama3.1")
+    )
+    ai_eval_ui_enabled: bool = field(
+        default_factory=lambda: _env_bool("EUB_CHANGES_AI_EVAL_UI", False)
+    )
+    ai_eval_log_path: str = field(
+        default_factory=lambda: _env_str(
+            "EUB_CHANGES_AI_EVAL_LOG_PATH",
+            str(Path.home() / "EUBChanges" / "ai-evaluation.jsonl"),
+        )
+    )
+
 
 def _migrate_raw(raw: dict[str, Any]) -> dict[str, Any]:
     """Convert legacy field names before merging with defaults."""
@@ -52,6 +86,9 @@ def _migrate_raw(raw: dict[str, Any]) -> dict[str, Any]:
     raw.pop("cloud_track_base", None)
     if raw.get("song_display_mode") not in (None, "chord_cells", "cloud_graph"):
         raw["song_display_mode"] = "chord_cells"
+    if "ai_enabled" in raw and "ai_generation_enabled" not in raw:
+        raw["ai_generation_enabled"] = raw["ai_enabled"]
+    raw.pop("ai_enabled", None)
     return raw
 
 
