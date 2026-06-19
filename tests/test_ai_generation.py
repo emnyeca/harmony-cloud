@@ -6,8 +6,10 @@ import pytest
 
 from changes.ai_generation import (
     AI_COMPOSER,
+    AI_SAFE_CHORD_QUALITIES,
     AiGenerationSettings,
     AiGenerationError,
+    _build_prompt,
     append_evaluation_log,
     ensure_ollama_ready,
     generate_harmony_from_ollama,
@@ -16,6 +18,10 @@ from changes.ai_generation import (
     normalize_ai_chord_symbol,
     result_from_json_text,
 )
+from changes.app_settings import AppSettings
+from changes.chord_parser import parse_chord_core
+from changes.models.song_model import HarmonyEvent, Measure, SongModel
+from changes.ui_pipeline import compile_song_for_ui
 
 
 def _payload() -> dict:
@@ -105,6 +111,10 @@ def test_normalize_ai_chord_symbol_allows_alt_or_explicit_alterations(raw: str) 
     assert normalize_ai_chord_symbol(raw) == raw
 
 
+def test_normalize_ai_chord_symbol_converts_parenthesized_alt() -> None:
+    assert normalize_ai_chord_symbol("D7(alt)") == "D7alt"
+
+
 @pytest.mark.parametrize("raw", ["G7b13alt", "G7altb9", "C7#9alt", "G7alt(b9)"])
 def test_normalize_ai_chord_symbol_rejects_alt_mixed_with_explicit_alterations(raw: str) -> None:
     with pytest.raises(AiGenerationError, match="alt cannot be combined with explicit alterations"):
@@ -132,6 +142,25 @@ def test_result_from_json_text_stores_normalized_ai_chords() -> None:
     assert result.editor_state.cells == ["G7(b9,#11)", "|"]
 
 
+def test_result_from_json_text_accepts_parenthesized_major_sharp_eleven_through_ui_pipeline() -> None:
+    payload = _payload()
+    payload["progression"] = [{"chord": "Cmaj7(#11)", "beats": 4}]
+
+    result = result_from_json_text(json.dumps(payload), user_prompt="x", model_name="test-model")
+
+    assert result.song.measures[0].harmony[0].symbol == "Cmaj7(#11)"
+    assert parse_chord_core("Cmaj7(#11)").normalized_quality == "maj7#11"
+    compile_song_for_ui(result.song, AppSettings())
+
+
+def test_result_from_json_text_rejects_quality_not_in_ai_safe_pipeline_vocabulary() -> None:
+    payload = _payload()
+    payload["progression"] = [{"chord": "Dm13", "beats": 4}]
+
+    with pytest.raises(AiGenerationError, match="Chord name cannot be parsed|pipeline vocabulary"):
+        result_from_json_text(json.dumps(payload), user_prompt="x", model_name="test-model")
+
+
 def test_result_from_json_text_stores_normalized_minor_alias() -> None:
     payload = _payload()
     payload["progression"] = [{"chord": "Ebmin6", "beats": 4}]
@@ -150,6 +179,63 @@ def test_result_from_json_text_accepts_six_nine_quality() -> None:
 
     assert result.song.measures[0].harmony[0].symbol == "Eb6/9"
     assert result.editor_state.cells == ["Eb6/9", "|"]
+
+
+def test_ai_safe_chord_qualities_representatives_compile_through_ui_pipeline() -> None:
+    symbols_by_quality = {
+        "": "C",
+        "m": "Cm",
+        "6": "C6",
+        "m6": "Cm6",
+        "6/9": "C6/9",
+        "m6/9": "Cm6/9",
+        "maj7": "Cmaj7",
+        "maj9": "Cmaj9",
+        "maj7#11": "Cmaj7(#11)",
+        "maj13": "Cmaj13",
+        "m7": "Cm7",
+        "m9": "Cm9",
+        "m11": "Cm11",
+        "mMaj7": "CmMaj7",
+        "m7b5": "Cm7b5",
+        "dim": "Cdim",
+        "dim7": "Cdim7",
+        "7": "G7",
+        "9": "G9",
+        "13": "G13",
+        "13b9": "G13(b9)",
+        "7b9": "G7(b9)",
+        "7b9#11": "G7(b9,#11)",
+        "7#9": "G7(#9)",
+        "7#11": "G7(#11)",
+        "7b13": "G7(b13)",
+        "7#5": "G7(#5)",
+        "7b5": "G7(b5)",
+        "7#5b9": "G7#5b9",
+        "7b5b9": "G7b5b9",
+        "7#9b5": "G7#9b5",
+        "7sus4": "G7sus4",
+        "9sus4": "G9sus4",
+        "7b9sus4": "G7b9sus4",
+        "alt": "D7alt",
+        "aug": "Caug",
+        "5": "C5",
+        "11": "G11",
+    }
+    assert set(symbols_by_quality) == set(AI_SAFE_CHORD_QUALITIES)
+
+    for symbol in symbols_by_quality.values():
+        compile_song_for_ui(_single_chord_song(symbol), AppSettings())
+
+
+def test_build_prompt_uses_neutral_schema_example_and_light_prompt_guidance() -> None:
+    prompt = _build_prompt("元気で軽快")
+
+    assert '"tempo": 48' not in prompt
+    assert "Format example only. This is not a musical recommendation" in prompt
+    assert "90-150 BPM" in prompt
+    assert "48-72 BPM is allowed" in prompt
+    assert "Cmaj7(#11)" not in prompt.split("Format example only.", 1)[1]
 
 
 def test_append_evaluation_log_writes_jsonl(tmp_path) -> None:
@@ -207,3 +293,30 @@ def test_extract_ollama_response_reports_error_payload() -> None:
 def test_extract_ollama_response_reports_thinking_without_response() -> None:
     with pytest.raises(AiGenerationError, match="thinking text but no final JSON response"):
         _extract_ollama_response_text({"response": "", "thinking": '{"ok": true}'})
+
+
+def _single_chord_song(symbol: str) -> SongModel:
+    return SongModel(
+        title="Pipeline Probe",
+        working_key="C",
+        performance_tempo=120,
+        composer=AI_COMPOSER,
+        measures=(
+            Measure(
+                number=1,
+                section_id="A__OCC1",
+                meter_numerator=4,
+                meter_denominator=4,
+                absolute_start_quarters=0,
+                harmony=(
+                    HarmonyEvent(
+                        id="m1_h1",
+                        symbol=symbol,
+                        measure_number=1,
+                        offset_quarters=0,
+                        duration_quarters=4,
+                    ),
+                ),
+            ),
+        ),
+    )

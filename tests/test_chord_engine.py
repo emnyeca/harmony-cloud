@@ -78,6 +78,7 @@ def test_parse_chord_core_accepts_parenthesized_dominant_tensions():
 
     assert core.root == "G"
     assert core.quality == "7(b9,#11)"
+    assert core.normalized_quality == "7b9#11"
     assert core.seventh_type == "b7"
     assert core.extensions == frozenset({"7", "9", "11"})
     assert core.altered_degrees == frozenset({"b9", "#11"})
@@ -88,6 +89,7 @@ def test_parse_chord_core_accepts_parenthesized_major_sharp_eleven():
 
     assert core.root == "C"
     assert core.quality == "maj7(#11)"
+    assert core.normalized_quality == "maj7#11"
     assert core.seventh_type == "maj7"
     assert core.extensions == frozenset({"7", "11"})
     assert core.altered_degrees == frozenset({"#11"})
@@ -115,6 +117,27 @@ def test_construct_chord_c_six_nine_uses_major_triad_sixth_and_ninth():
     assert result.mandatory_intervals == (0, 4, 7, 9, 2)
     assert result.mandatory_pitch_classes == (0, 4, 7, 9, 2)
     assert result.final_pitch_classes == (0, 4, 7, 9, 2)
+
+
+def test_construct_chord_cmaj7_sharp_eleven_preserves_explicit_color():
+    core = parse_chord_core("Cmaj7(#11)")
+    selected = _selected_collection(0, 2, 4, 6, 7, 9, 11)
+
+    result = construct_chord_pitch_classes(core, selected)
+
+    assert result.mandatory_intervals == (0, 4, 7, 11, 6)
+    assert result.mandatory_pitch_classes == (0, 4, 7, 11, 6)
+    assert result.final_pitch_classes == (0, 4, 7, 11, 6, 2)
+
+
+def test_construct_chord_g7_flat_nine_sharp_eleven_preserves_specific_alterations():
+    core = parse_chord_core("G7(b9,#11)")
+    selected = _selected_collection(7, 8, 11, 1, 3, 5)
+
+    result = construct_chord_pitch_classes(core, selected)
+
+    assert result.normalized_quality == "7b9#11"
+    assert set(result.mandatory_intervals) == {0, 1, 4, 6, 7, 10}
 
 
 def test_construct_chord_c_minor_six_nine_uses_minor_triad_sixth_and_ninth():

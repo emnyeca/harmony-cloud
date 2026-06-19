@@ -21,6 +21,49 @@ from changes.editor import EditorState
 from changes.models.song_model import HarmonyEvent, Measure, SongModel
 
 AI_COMPOSER = "Emnyeca Harmony AI"
+AI_SAFE_CHORD_QUALITIES = frozenset(
+    {
+        "",
+        "m",
+        "6",
+        "m6",
+        "6/9",
+        "m6/9",
+        "maj7",
+        "maj9",
+        "maj7#11",
+        "maj13",
+        "m7",
+        "m9",
+        "m11",
+        "mMaj7",
+        "m7b5",
+        "dim",
+        "dim7",
+        "7",
+        "9",
+        "13",
+        "13b9",
+        "7b9",
+        "7b9#11",
+        "7#9",
+        "7#11",
+        "7b13",
+        "7#5",
+        "7b5",
+        "7#5b9",
+        "7b5b9",
+        "7#9b5",
+        "7sus4",
+        "9sus4",
+        "7b9sus4",
+        "alt",
+        "aug",
+        "5",
+        "11",
+    }
+)
+_AI_SAFE_CHORD_QUALITY_PROMPT = ", ".join(sorted(AI_SAFE_CHORD_QUALITIES, key=lambda item: (len(item), item)))
 _AI_COMPACT_ALTERATION_RE = re.compile(
     r"^(?P<root>[A-G](?:#|b)?)(?P<base>maj13|maj9|maj7|mMaj7|m7b5|m11|m9|m7|13|11|9|7)"
     r"(?P<alterations>(?:[#b](?:5|9|11|13))+)$"
@@ -228,11 +271,17 @@ def song_and_editor_from_payload(
             raise AiGenerationError(f"Progression item {index} has no chord.")
         normalized_symbol = normalize_ai_chord_symbol(symbol)
         try:
-            parse_chord_core(normalized_symbol)
+            core = parse_chord_core(normalized_symbol)
         except Exception as exc:
             raise AiGenerationError(
                 f"Chord name cannot be parsed: {symbol} -> {normalized_symbol}"
             ) from exc
+        if core.normalized_quality not in AI_SAFE_CHORD_QUALITIES:
+            raise AiGenerationError(
+                "Chord failed AI pipeline vocabulary validation: "
+                f"{symbol} -> {normalized_symbol} "
+                f"(normalized quality: {core.normalized_quality})"
+            )
         try:
             beats = Fraction(str(item.get("beats", 4))).limit_denominator(1000)
         except Exception as exc:
@@ -272,6 +321,7 @@ def song_and_editor_from_payload(
         measures=tuple(measures),
         composer=AI_COMPOSER,
     )
+    _validate_generated_song_pipeline(song)
     return song, state
 
 
@@ -332,7 +382,74 @@ def _normalize_parenthesized_ai_chord_symbol(symbol: str) -> str:
     before, rest = symbol.split("(", 1)
     inner, after = rest.split(")", 1)
     tensions = [part.strip() for part in inner.split(",") if part.strip()]
+    if len(tensions) == 1 and tensions[0] == "alt" and before.strip().endswith("7"):
+        return f"{before.strip()}alt{after.strip()}"
     return f"{before.strip()}({','.join(tensions)}){after.strip()}"
+
+
+def _validate_generated_song_pipeline(song: SongModel) -> None:
+    try:
+        _compile_generated_song(song)
+        return
+    except Exception as whole_song_exc:
+        for symbol in _song_chord_symbols(song):
+            probe = _single_chord_song(song, symbol)
+            try:
+                _compile_generated_song(probe)
+            except Exception as chord_exc:
+                raise AiGenerationError(
+                    "Chord failed pipeline validation at compile_song_for_ui: "
+                    f"{symbol}: {chord_exc}"
+                ) from chord_exc
+        raise AiGenerationError(
+            "Generated song failed pipeline validation at compile_song_for_ui: "
+            f"{whole_song_exc}"
+        ) from whole_song_exc
+
+
+def _compile_generated_song(song: SongModel) -> None:
+    from changes.app_settings import AppSettings
+    from changes.ui_pipeline import compile_song_for_ui
+
+    compile_song_for_ui(song, AppSettings())
+
+
+def _song_chord_symbols(song: SongModel) -> tuple[str, ...]:
+    symbols: list[str] = []
+    for measure in song.measures:
+        for harmony in measure.harmony:
+            symbols.append(harmony.symbol)
+    return tuple(symbols)
+
+
+def _single_chord_song(source: SongModel, symbol: str) -> SongModel:
+    meter_num = source.measures[0].meter_numerator if source.measures else 4
+    meter_den = source.measures[0].meter_denominator if source.measures else 4
+    duration = Fraction(4 * meter_num, meter_den)
+    measure = Measure(
+        number=1,
+        section_id="A__OCC1",
+        meter_numerator=meter_num,
+        meter_denominator=meter_den,
+        absolute_start_quarters=Fraction(0),
+        harmony=(
+            HarmonyEvent(
+                id="m1_h1",
+                symbol=symbol,
+                measure_number=1,
+                offset_quarters=Fraction(0),
+                duration_quarters=duration,
+            ),
+        ),
+    )
+    return SongModel(
+        title=source.title,
+        working_key=source.working_key,
+        working_key_mode=source.working_key_mode,
+        performance_tempo=source.performance_tempo,
+        measures=(measure,),
+        composer=source.composer,
+    )
 
 
 def append_evaluation_log(
@@ -485,7 +602,13 @@ You generate chord progressions for EUB Changes.
 User title or natural-language prompt:
 {title}
 
-Create a musically balanced progression with a non-diatonic tendency. Avoid ordinary pop loops, simple diatonic cycles, and easy I-vi-IV-V behavior. Use nearby modulation, borrowed chords, modal colors, remote key relationships, or floating harmony when useful. Do not make the result complex only for theory's sake.
+Create a musically balanced progression first. Use non-diatonic color only when it fits the prompt. Avoid ordinary pop loops, simple diatonic cycles, and easy I-vi-IV-V behavior, but do not force every chord to be distant or high-tension. Use nearby modulation, borrowed chords, modal colors, remote key relationships, or floating harmony when useful. Do not make the result complex only for theory's sake.
+
+Tempo and density rules:
+- If the prompt suggests simple, pop, light, bright, energetic, 元気, 軽快, 明るい, or ポップス, choose roughly 90-150 BPM and avoid excessive #11, b9, b13, or alt.
+- If the prompt suggests 神々, 浮遊, アンビエント, 荘厳, 遅い, slow, solemn, ambient, or floating, 48-72 BPM is allowed.
+- Do not add tensions to every chord.
+- Dense altered tensions should normally appear only 1-2 times per 8 bars unless the prompt explicitly asks for dense jazz harmony.
 
 Return JSON only. Do not include explanation, markdown, poetic comments, or any text outside JSON.
 
@@ -496,25 +619,25 @@ Chord notation rules:
 - Prefer `Cmaj7(#11)` instead of `Cmaj7#11` if multiple parser-safe forms are available.
 - Do not combine `alt` with explicit alterations.
 - Use `G7alt`, not `G7b13alt`.
+- Use `D7alt`, not `D7(alt)`.
 - Use `G7(b13)` if only b13 is intended.
 - Use `G7(b9,#11)` if specific alterations are intended.
+- Use only these pipeline-safe chord qualities: {_AI_SAFE_CHORD_QUALITY_PROMPT}.
 - Return JSON only.
 
-Schema:
+Format example only. This is not a musical recommendation:
 {{
   "title": "{title}",
   "composer": "{AI_COMPOSER}",
-  "tempo": 48,
+  "tempo": 120,
   "meter": "4/4",
   "progression": [
-    {{ "chord": "Emaj7(#11)", "beats": 4 }},
-    {{ "chord": "Cmaj7(#11)", "beats": 4 }},
-    {{ "chord": "Abmaj7(#11)", "beats": 4 }},
-    {{ "chord": "Dbmaj9", "beats": 4 }}
+    {{ "chord": "C", "beats": 4 }},
+    {{ "chord": "G7", "beats": 4 }}
   ]
 }}
 
-Use only chord symbols compatible with this style: maj7, maj9, maj7(#11), maj13, m7, m9, m11, mMaj7, m7b5, dim7, 7, 9, 13, 7(b9), 7(#9), 7(#11), 7(b13), 7(#5), 7(b5), 7sus4, 9sus4, 7b9sus4, alt, slash bass chords with note basses. Beats must be positive and should normally complete whole bars in the meter.
+Slash bass chords with note basses are allowed when musically useful. Beats must be positive and should normally complete whole bars in the meter.
 /no_think"""
 
 

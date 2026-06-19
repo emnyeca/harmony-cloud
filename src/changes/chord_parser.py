@@ -39,6 +39,7 @@ _QUALITY_PATTERNS = (
     "13b9",
     "m11",
     "7#11",
+    "7b9#11",
     "7alt",
     "7b13",
     "7#9",
@@ -78,6 +79,18 @@ _PAREN_CHORD_RE = re.compile(
     r"\((?P<tensions>[^)]+)\)$"
 )
 _SLASH_BASS_RE = re.compile(r"^[A-G](?:#|b)?$")
+_PARENTHESIZED_QUALITY_NORMALIZATION = {
+    ("maj7", ("#11",)): "maj7#11",
+    ("7", ("alt",)): "alt",
+    ("7", ("b9",)): "7b9",
+    ("7", ("#9",)): "7#9",
+    ("7", ("#11",)): "7#11",
+    ("7", ("b13",)): "7b13",
+    ("7", ("#5",)): "7#5",
+    ("7", ("b5",)): "7b5",
+    ("7", ("b9", "#11")): "7b9#11",
+    ("13", ("b9",)): "13b9",
+}
 
 
 _QUALITY_MODEL: dict[str, dict] = {
@@ -306,6 +319,15 @@ _QUALITY_MODEL: dict[str, dict] = {
         "omitted_degrees": frozenset(),
         "special_semantic_tag": None,
     },
+    "7b9#11": {
+        "base_quality": "dominant",
+        "seventh_type": "b7",
+        "extensions": frozenset({"7", "9", "11"}),
+        "added_degrees": frozenset(),
+        "altered_degrees": frozenset({"b9", "#11"}),
+        "omitted_degrees": frozenset(),
+        "special_semantic_tag": None,
+    },
     "7b13": {
         "base_quality": "dominant",
         "seventh_type": "b7",
@@ -454,7 +476,7 @@ def _split_slash_bass(text: str) -> tuple[str, str | None]:
     return text, None
 
 
-def _parse_parenthesized_quality(text: str) -> tuple[str, str, dict] | None:
+def _parse_parenthesized_quality(text: str) -> tuple[str, str, str, dict] | None:
     m = _PAREN_CHORD_RE.match(text)
     if not m:
         return None
@@ -471,24 +493,35 @@ def _parse_parenthesized_quality(text: str) -> tuple[str, str, dict] | None:
     altered_degrees = set(base_model["altered_degrees"])
     omitted_degrees = set(base_model["omitted_degrees"])
 
-    for raw in m.group("tensions").split(","):
-        tension = raw.strip()
-        if not tension:
-            continue
-        if tension.startswith(("b", "#")):
-            degree = tension[1:]
-            if degree not in {"5", "9", "11", "13"}:
+    tension_parts = tuple(t.strip() for t in m.group("tensions").split(",") if t.strip())
+    for tension in tension_parts:
+        normalized_tension = "alt" if tension == "alt" else tension
+        if normalized_tension == "alt":
+            if normalized_base != "7":
                 raise ValueError(f"Unsupported chord tension: {tension}")
-            altered_degrees.add(tension)
+            continue
+        if normalized_tension.startswith(("b", "#")):
+            degree = normalized_tension[1:]
+            if degree not in {"5", "9", "11", "13"}:
+                raise ValueError(f"Unsupported chord tension: {normalized_tension}")
+            altered_degrees.add(normalized_tension)
             if degree != "5":
                 extensions.add(degree)
         else:
-            if tension not in {"4", "6", "9", "11", "13"}:
-                raise ValueError(f"Unsupported chord tension: {tension}")
-            extensions.add(tension)
-            added_degrees.add(tension)
+            if normalized_tension not in {"4", "6", "9", "11", "13"}:
+                raise ValueError(f"Unsupported chord tension: {normalized_tension}")
+            extensions.add(normalized_tension)
+            added_degrees.add(normalized_tension)
 
-    quality = f"{base_quality}({','.join(t.strip() for t in m.group('tensions').split(',') if t.strip())})"
+    quality = f"{base_quality}({','.join(tension_parts)})"
+    normalized_quality = _PARENTHESIZED_QUALITY_NORMALIZATION.get(
+        (normalized_base, tension_parts),
+        quality,
+    )
+    canonical_model = _QUALITY_MODEL.get(normalized_quality)
+    if canonical_model is not None:
+        return root, quality, normalized_quality, canonical_model
+
     model = {
         "base_quality": base_model["base_quality"],
         "seventh_type": base_model["seventh_type"],
@@ -498,7 +531,7 @@ def _parse_parenthesized_quality(text: str) -> tuple[str, str, dict] | None:
         "omitted_degrees": frozenset(omitted_degrees),
         "special_semantic_tag": base_model["special_semantic_tag"],
     }
-    return root, quality, model
+    return root, quality, quality, model
 
 
 def parse_chord_core(chord: str) -> ChordSymbolCore:
@@ -513,8 +546,7 @@ def parse_chord_core(chord: str) -> ChordSymbolCore:
         if model is None:
             raise ValueError(f"Unsupported chord quality: {quality}")
     else:
-        root, quality, model = parenthesized
-        normalized_quality = quality
+        root, quality, normalized_quality, model = parenthesized
 
     slash_bass = None
     slash_bass_pc = None
