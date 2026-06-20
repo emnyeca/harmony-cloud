@@ -28,6 +28,7 @@ class ChordSymbolCore:
 
 
 _QUALITY_PATTERNS = (
+    "maj7#11",
     "maj7#5",
     "7#5b9",
     "7b5b9",
@@ -38,6 +39,8 @@ _QUALITY_PATTERNS = (
     "13b9",
     "m11",
     "7#11",
+    "7b9#11",
+    "7alt",
     "7b13",
     "7#9",
     "7b9",
@@ -52,6 +55,7 @@ _QUALITY_PATTERNS = (
     "maj7",
     "m9",
     "m7",
+    "m6/9",
     "m6",
     "aug7",
     "dim",
@@ -62,6 +66,7 @@ _QUALITY_PATTERNS = (
     "11",
     "9",
     "7",
+    "6/9",
     "6",
     "5",
     "",
@@ -69,6 +74,23 @@ _QUALITY_PATTERNS = (
 _CHORD_RE = re.compile(
     r"^(?P<root>[A-G](?:#|b)?)(?P<quality>" + "|".join(_QUALITY_PATTERNS) + r")$"
 )
+_PAREN_CHORD_RE = re.compile(
+    r"^(?P<root>[A-G](?:#|b)?)(?P<base>maj7|maj9|maj13|mMaj7|m7b5|m11|m9|m7|m6/9|m6|m|13|11|9|7|6/9|6|5|dim7|dim|aug|alt)?"
+    r"\((?P<tensions>[^)]+)\)$"
+)
+_SLASH_BASS_RE = re.compile(r"^[A-G](?:#|b)?$")
+_PARENTHESIZED_QUALITY_NORMALIZATION = {
+    ("maj7", ("#11",)): "maj7#11",
+    ("7", ("alt",)): "alt",
+    ("7", ("b9",)): "7b9",
+    ("7", ("#9",)): "7#9",
+    ("7", ("#11",)): "7#11",
+    ("7", ("b13",)): "7b13",
+    ("7", ("#5",)): "7#5",
+    ("7", ("b5",)): "7b5",
+    ("7", ("b9", "#11")): "7b9#11",
+    ("13", ("b9",)): "13b9",
+}
 
 
 _QUALITY_MODEL: dict[str, dict] = {
@@ -180,6 +202,33 @@ _QUALITY_MODEL: dict[str, dict] = {
         "omitted_degrees": frozenset(),
         "special_semantic_tag": None,
     },
+    "6/9": {
+        "base_quality": "major",
+        "seventh_type": None,
+        "extensions": frozenset({"6", "9"}),
+        "added_degrees": frozenset({"6", "9"}),
+        "altered_degrees": frozenset(),
+        "omitted_degrees": frozenset(),
+        "special_semantic_tag": None,
+    },
+    "m6/9": {
+        "base_quality": "minor",
+        "seventh_type": None,
+        "extensions": frozenset({"6", "9"}),
+        "added_degrees": frozenset({"6", "9"}),
+        "altered_degrees": frozenset(),
+        "omitted_degrees": frozenset(),
+        "special_semantic_tag": None,
+    },
+    "maj7#11": {
+        "base_quality": "major",
+        "seventh_type": "maj7",
+        "extensions": frozenset({"7", "11"}),
+        "added_degrees": frozenset(),
+        "altered_degrees": frozenset({"#11"}),
+        "omitted_degrees": frozenset(),
+        "special_semantic_tag": None,
+    },
     "maj7#5": {
         "base_quality": "major",
         "seventh_type": "maj7",
@@ -267,6 +316,15 @@ _QUALITY_MODEL: dict[str, dict] = {
         "extensions": frozenset({"7", "11"}),
         "added_degrees": frozenset(),
         "altered_degrees": frozenset({"#11"}),
+        "omitted_degrees": frozenset(),
+        "special_semantic_tag": None,
+    },
+    "7b9#11": {
+        "base_quality": "dominant",
+        "seventh_type": "b7",
+        "extensions": frozenset({"7", "9", "11"}),
+        "added_degrees": frozenset(),
+        "altered_degrees": frozenset({"b9", "#11"}),
         "omitted_degrees": frozenset(),
         "special_semantic_tag": None,
     },
@@ -396,6 +454,8 @@ def normalize_chord_quality(quality: str) -> str:
         return "7#5"
     if q == "sus4":
         return "7sus4"
+    if q == "7alt":
+        return "alt"
     return q
 
 
@@ -406,18 +466,87 @@ def _parse_root_and_quality(text: str) -> tuple[str, str]:
     return m.group("root"), m.group("quality")
 
 
+def _split_slash_bass(text: str) -> tuple[str, str | None]:
+    if "/" not in text:
+        return text, None
+    left, right = text.rsplit("/", 1)
+    right = right.strip()
+    if _SLASH_BASS_RE.match(right):
+        return left.strip(), right
+    return text, None
+
+
+def _parse_parenthesized_quality(text: str) -> tuple[str, str, str, dict] | None:
+    m = _PAREN_CHORD_RE.match(text)
+    if not m:
+        return None
+
+    root = m.group("root")
+    base_quality = m.group("base") or ""
+    normalized_base = normalize_chord_quality(base_quality)
+    base_model = _QUALITY_MODEL.get(normalized_base)
+    if base_model is None:
+        raise ValueError(f"Unsupported chord quality: {base_quality}")
+
+    extensions = set(base_model["extensions"])
+    added_degrees = set(base_model["added_degrees"])
+    altered_degrees = set(base_model["altered_degrees"])
+    omitted_degrees = set(base_model["omitted_degrees"])
+
+    tension_parts = tuple(t.strip() for t in m.group("tensions").split(",") if t.strip())
+    for tension in tension_parts:
+        normalized_tension = "alt" if tension == "alt" else tension
+        if normalized_tension == "alt":
+            if normalized_base != "7":
+                raise ValueError(f"Unsupported chord tension: {tension}")
+            continue
+        if normalized_tension.startswith(("b", "#")):
+            degree = normalized_tension[1:]
+            if degree not in {"5", "9", "11", "13"}:
+                raise ValueError(f"Unsupported chord tension: {normalized_tension}")
+            altered_degrees.add(normalized_tension)
+            if degree != "5":
+                extensions.add(degree)
+        else:
+            if normalized_tension not in {"4", "6", "9", "11", "13"}:
+                raise ValueError(f"Unsupported chord tension: {normalized_tension}")
+            extensions.add(normalized_tension)
+            added_degrees.add(normalized_tension)
+
+    quality = f"{base_quality}({','.join(tension_parts)})"
+    normalized_quality = _PARENTHESIZED_QUALITY_NORMALIZATION.get(
+        (normalized_base, tension_parts),
+        quality,
+    )
+    canonical_model = _QUALITY_MODEL.get(normalized_quality)
+    if canonical_model is not None:
+        return root, quality, normalized_quality, canonical_model
+
+    model = {
+        "base_quality": base_model["base_quality"],
+        "seventh_type": base_model["seventh_type"],
+        "extensions": frozenset(extensions),
+        "added_degrees": frozenset(added_degrees),
+        "altered_degrees": frozenset(altered_degrees),
+        "omitted_degrees": frozenset(omitted_degrees),
+        "special_semantic_tag": base_model["special_semantic_tag"],
+    }
+    return root, quality, quality, model
+
+
 def parse_chord_core(chord: str) -> ChordSymbolCore:
     text = str(chord).strip()
-    left, slash = text, None
-    if "/" in text:
-        left, slash = text.split("/", 1)
-        slash = slash.strip() or None
+    left, slash = _split_slash_bass(text)
 
-    root, quality = _parse_root_and_quality(left.strip())
-    normalized_quality = normalize_chord_quality(quality)
-    model = _QUALITY_MODEL.get(normalized_quality)
-    if model is None:
-        raise ValueError(f"Unsupported chord quality: {quality}")
+    parenthesized = _parse_parenthesized_quality(left.strip())
+    if parenthesized is None:
+        root, quality = _parse_root_and_quality(left.strip())
+        normalized_quality = normalize_chord_quality(quality)
+        model = _QUALITY_MODEL.get(normalized_quality)
+        if model is None:
+            raise ValueError(f"Unsupported chord quality: {quality}")
+    else:
+        root, quality, normalized_quality, model = parenthesized
 
     slash_bass = None
     slash_bass_pc = None

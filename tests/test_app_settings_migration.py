@@ -69,6 +69,30 @@ def test_save_load_song_display_mode(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert loaded.song_display_mode == "cloud_graph"
 
 
+def test_save_load_ai_generation_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr("changes.app_settings.SETTINGS_PATH", settings_path)
+
+    save_settings(
+        AppSettings(
+            ai_generation_enabled=False,
+            ollama_endpoint="http://127.0.0.1:11434",
+            ollama_model_name="qwen2.5",
+            ai_generation_max_validation_retries=2,
+            ai_eval_ui_enabled=True,
+            ai_eval_log_path=str(tmp_path / "eval.jsonl"),
+        )
+    )
+    loaded = load_settings()
+
+    assert loaded.ai_generation_enabled is False
+    assert loaded.ollama_endpoint == "http://127.0.0.1:11434"
+    assert loaded.ollama_model_name == "qwen2.5"
+    assert loaded.ai_generation_max_validation_retries == 2
+    assert loaded.ai_eval_ui_enabled is True
+    assert loaded.ai_eval_log_path == str(tmp_path / "eval.jsonl")
+
+
 def test_load_legacy_cloud_track_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr("changes.app_settings.SETTINGS_PATH", settings_path)

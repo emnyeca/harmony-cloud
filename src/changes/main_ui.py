@@ -17,6 +17,15 @@ from typing import Literal
 
 import streamlit as st
 
+from changes.ai_generation import (
+    AiGenerationError,
+    AiGenerationResult,
+    AiGenerationSettings,
+    append_evaluation_log,
+    ensure_ollama_ready,
+    generate_harmony_from_ollama,
+)
+from changes import ai_evaluation as ai_eval
 from changes.app_settings import AppSettings, load_settings, save_settings
 from changes.editor import EditorState, editor_to_song_model
 from changes.key_signature import format_working_key, parse_working_key_display
@@ -226,6 +235,11 @@ def _ss_init() -> None:
         ("_import_progress_request", None), ("_import_progress_status", None),
         ("_import_uploader_reset_token", 0),
         ("_send_confirm_mode", None),
+        ("_ai_generation_pending_discard", False),
+        ("_ai_generation_last_result", None),
+        ("_ai_generation_last_error", None),
+        ("_ai_generation_eval_rating", None),
+        ("_pending_editor_widget_values", None),
         # Action-specific isolated result state
         ("_send_area_ok", False), ("_send_area_ok_detail", None),
         ("_send_area_error", None),
@@ -240,6 +254,7 @@ def _ss_init() -> None:
     for key, default in _PREVIEW_STATE_KEYS:
         if key not in st.session_state:
             st.session_state[key] = default
+    _apply_pending_editor_widget_values()
 
 
 def _refresh_library() -> None:
@@ -328,6 +343,128 @@ def _render_pending_ui_messages() -> None:
     err = st.session_state.pop("_ui_error_message", None)
     if err:
         st.error(str(err))
+
+
+def _queue_editor_widget_sync(state: EditorState) -> None:
+    meter_parts = state.meter.split("/", 1)
+    meter_num = int(meter_parts[0]) if len(meter_parts) == 2 else 4
+    meter_den = int(meter_parts[1]) if len(meter_parts) == 2 else 4
+    st.session_state["_pending_editor_widget_values"] = {
+        "editor_title": state.title,
+        "editor_tempo": state.tempo,
+        "meter_num": meter_num,
+        "meter_den": meter_den,
+        "working_key_input": state.working_key,
+    }
+
+
+def _apply_pending_editor_widget_values() -> None:
+    pending = st.session_state.get("_pending_editor_widget_values")
+    if not pending:
+        return
+    for key, value in dict(pending).items():
+        st.session_state[key] = value
+    st.session_state["_pending_editor_widget_values"] = None
+
+
+def _ai_settings(settings: AppSettings) -> AiGenerationSettings:
+    return AiGenerationSettings(
+        enabled=bool(getattr(settings, "ai_generation_enabled", False)),
+        endpoint=str(getattr(settings, "ollama_endpoint", "http://localhost:11434")),
+        model_name=str(getattr(settings, "ollama_model_name", "llama3.1")),
+        max_validation_retries=int(getattr(settings, "ai_generation_max_validation_retries", 1)),
+    )
+
+
+def _ensure_ollama_for_ai_startup() -> None:
+    settings: AppSettings = st.session_state._settings
+    ai_settings = _ai_settings(settings)
+    if not ai_settings.enabled:
+        return
+    bootstrap_key = "_ollama_bootstrap_model"
+    status_key = "_ollama_bootstrap_status"
+    if st.session_state.get(bootstrap_key) == ai_settings.model_name:
+        return
+    with st.spinner(f"Preparing Ollama model: {ai_settings.model_name}"):
+        status = ensure_ollama_ready(ai_settings)
+    st.session_state[bootstrap_key] = ai_settings.model_name
+    st.session_state[status_key] = status
+
+
+def _sync_editor_title() -> None:
+    state: EditorState = st.session_state.editor
+    new_title = str(st.session_state.get("editor_title") or "")
+    if new_title != state.title:
+        state.title = new_title
+        st.session_state._editor_dirty = True
+        st.session_state._dirty_song_override = None
+        st.session_state._dirty_song_override_cells = None
+
+
+def _apply_ai_generation_result(result: AiGenerationResult) -> None:
+    st.session_state.editor = result.editor_state
+    _queue_editor_widget_sync(result.editor_state)
+    st.session_state._editor_working_key_mode = None
+    st.session_state._editor_dirty = True
+    st.session_state._dirty_song_override = result.song
+    st.session_state._dirty_song_override_cells = tuple(result.editor_state.cells)
+    st.session_state._editor_section_labels = {"initial": "A__OCC1"}
+    st.session_state._ai_generation_last_result = result
+    st.session_state._ai_generation_last_error = None
+    st.session_state._ai_generation_eval_rating = None
+    _clear_section_filter_state()
+
+
+def _run_ai_generation() -> bool:
+    settings: AppSettings = st.session_state._settings
+    state: EditorState = st.session_state.editor
+    user_prompt = (state.title or st.session_state.get("editor_title") or "").strip()
+    try:
+        result = generate_harmony_from_ollama(
+            user_prompt,
+            _ai_settings(settings),
+            failure_log_path=getattr(settings, "ai_failure_log_path", "") or None,
+        )
+        _apply_ai_generation_result(result)
+        return True
+    except AiGenerationError as exc:
+        st.session_state._ai_generation_last_error = str(exc)
+        st.session_state._ui_error_message = str(exc)
+        return False
+    except Exception as exc:
+        message = f"AI generation failed: {exc}"
+        st.session_state._ai_generation_last_error = message
+        st.session_state._ui_error_message = message
+        return False
+
+
+def _request_ai_generation() -> None:
+    if st.session_state.get("_editor_dirty"):
+        st.session_state._ai_generation_pending_discard = True
+        _request_rerun()
+        return
+    with st.spinner("Generating harmony with Ollama..."):
+        ok = _run_ai_generation()
+    if ok:
+        _request_rerun(success_message="Generated harmony is now in Dirty state.")
+    else:
+        _request_rerun()
+
+
+def _write_ai_eval(decision: str) -> None:
+    settings: AppSettings = st.session_state._settings
+    result: AiGenerationResult | None = st.session_state.get("_ai_generation_last_result")
+    rating = st.session_state.get("_ai_generation_eval_rating")
+    append_evaluation_log(
+        getattr(settings, "ai_eval_log_path", ""),
+        user_prompt=result.user_prompt if result else str(st.session_state.get("editor_title") or ""),
+        generated_json=result.generated_json if result else None,
+        decision=decision,
+        rating=int(rating) if rating else None,
+        model_name=result.model_name if result else getattr(settings, "ollama_model_name", ""),
+        error=st.session_state.get("_ai_generation_last_error"),
+    )
+    st.session_state._ui_success_message = f"AI evaluation logged: {decision}"
 
 
 # ── Header data sources ───────────────────────────────────────────────────────
@@ -482,7 +619,8 @@ def _render_header() -> None:
     key = format_working_key(song.working_key, getattr(song, "working_key_mode", None)) if song else "—"
     tempo = str(int(song.performance_tempo)) if song else "—"
     meter = _song_meter_summary(song)
-    has_selected_song = st.session_state.get("_selected_path") is not None
+    has_selected_song = song is not None
+    settings: AppSettings = st.session_state._settings
 
     def _render_transpose_controls() -> None:
         down_col, up_col = st.columns([1,1], vertical_alignment="bottom", gap="small")
@@ -520,7 +658,24 @@ def _render_header() -> None:
         with song_col:
             _composer = getattr(song, "composer", None) if song else None
             _song_label = f"Song by {_composer}" if _composer else "Song"
-            _render_header_field(_song_label, ":material/library_music:", title, render_title=True, has_song=bool(song))
+            title_col, generate_col = st.columns([3, 1], vertical_alignment="bottom", gap="small")
+            with title_col:
+                if "editor_title" not in st.session_state:
+                    st.session_state.editor_title = st.session_state.editor.title
+                st.text_input(
+                    "Title",
+                    key="editor_title",
+                    label_visibility="collapsed",
+                    placeholder="Title / prompt",
+                    on_change=_sync_editor_title,
+                    icon=":material/library_music:",
+                )
+                st.caption(f"{_song_label}{'  *Dirty*' if st.session_state._editor_dirty else ''}")
+            with generate_col:
+                ai_enabled = bool(getattr(settings, "ai_generation_enabled", False))
+                if st.button("Generate", key="_ai_generate_btn", width="stretch", disabled=not ai_enabled):
+                    _request_ai_generation()
+                st.caption("Harmony AI" if ai_enabled else "AI off")
         with key_col:
             _render_header_field("Key", ":material/key:", key)
         with tempo_col:
@@ -529,6 +684,35 @@ def _render_header() -> None:
             _render_header_field("Meter", ":material/pie_chart:", meter)
         with transpose_col:
             _render_header_field("Transpose", ":material/piano:", render_controls=_render_transpose_controls)
+
+    if st.session_state.get("_ai_generation_last_error"):
+        st.error(str(st.session_state._ai_generation_last_error))
+    bootstrap_status = st.session_state.get("_ollama_bootstrap_status")
+    if bootstrap_status is not None and not getattr(bootstrap_status, "ok", False):
+        detail = getattr(bootstrap_status, "detail", None)
+        st.warning(
+            f"{getattr(bootstrap_status, 'message', 'Ollama is not ready.')}"
+            + (f"\n\n{detail}" if detail else "")
+        )
+    if bool(getattr(settings, "ai_eval_ui_enabled", False)):
+        result: AiGenerationResult | None = st.session_state.get("_ai_generation_last_result")
+        if result is not None or st.session_state.get("_ai_generation_last_error"):
+            ev1, ev2, ev3 = st.columns([1, 1, 2], vertical_alignment="bottom", gap="small")
+            if ev1.button("Use", key="_ai_eval_use", width="stretch", disabled=result is None):
+                _write_ai_eval("use")
+                _request_rerun()
+            if ev2.button("Reject", key="_ai_eval_reject", width="stretch"):
+                _write_ai_eval("reject")
+                _request_rerun()
+            ev3.select_slider(
+                "Rating",
+                options=[None, 1, 2, 3, 4, 5],
+                format_func=lambda x: "unrated" if x is None else str(x),
+                key="_ai_generation_eval_rating",
+            )
+
+    if st.session_state.get("_ai_generation_pending_discard"):
+        _dialog_ai_generation_discard()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -763,6 +947,25 @@ def _dialog_pending_deselect() -> None:
     if col_discard.button("Discard", type="primary", key="desel_discard", width="stretch"):
         _do_deselect_song()
         _request_rerun(reset_song_table=True)
+
+
+@st.dialog("Discard Unsaved Changes?", dismissible=False)
+def _dialog_ai_generation_discard() -> None:
+    if not st.session_state.get("_ai_generation_pending_discard"):
+        return
+    st.warning("Unsaved changes will be discarded before AI generation.")
+    col_cancel, col_discard = st.columns([1, 1], width="stretch", gap="small")
+    if col_cancel.button("Cancel", key="ai_gen_cancel", width="stretch"):
+        st.session_state._ai_generation_pending_discard = False
+        _request_rerun()
+    if col_discard.button("Discard and Generate", type="primary", key="ai_gen_discard", width="stretch"):
+        st.session_state._ai_generation_pending_discard = False
+        with st.spinner("Generating harmony with Ollama..."):
+            ok = _run_ai_generation()
+        if ok:
+            _request_rerun(success_message="Generated harmony is now in Dirty state.")
+        else:
+            _request_rerun()
 
 
 @st.dialog("Delete Song", dismissible=False)
@@ -1292,9 +1495,7 @@ def _load_song_into_editor(song: SongModel) -> None:
 
     st.session_state._editor_section_labels = section_labels
     st.session_state.editor = state
-    st.session_state.editor_title = state.title
-    st.session_state.editor_tempo = state.tempo
-    st.session_state.working_key_input = state.working_key
+    _queue_editor_widget_sync(state)
     st.session_state._editor_working_key_mode = song.working_key_mode
     st.session_state._editor_dirty = False
     st.session_state._dirty_song_override = None
@@ -2315,6 +2516,75 @@ def _render_settings() -> None:
             settings.confirm_before_hardware_write = new_confirm; changed = True
 
     # ── Library path ──────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Emnyeca Harmony AI")
+    ai_cols = st.columns([1.2, 2, 2, 1.2, 1.4], vertical_alignment="bottom")
+    with ai_cols[0]:
+        new_ai_enabled = _toggle(
+            "AI Generate",
+            "_s_ai_generation_enabled",
+            bool(getattr(settings, "ai_generation_enabled", False)),
+        )
+        if new_ai_enabled != bool(getattr(settings, "ai_generation_enabled", False)):
+            settings.ai_generation_enabled = new_ai_enabled
+            changed = True
+    with ai_cols[1]:
+        new_endpoint = st.text_input(
+            "Ollama endpoint",
+            value=str(getattr(settings, "ollama_endpoint", "http://localhost:11434")),
+            key="_s_ollama_endpoint",
+        )
+        if new_endpoint != getattr(settings, "ollama_endpoint", ""):
+            settings.ollama_endpoint = new_endpoint
+            changed = True
+    with ai_cols[2]:
+        new_model = st.text_input(
+            "Ollama model",
+            value=str(getattr(settings, "ollama_model_name", "llama3.1")),
+            key="_s_ollama_model_name",
+        )
+        if new_model != getattr(settings, "ollama_model_name", ""):
+            settings.ollama_model_name = new_model
+            changed = True
+        st.caption("Restart EUB Changes after changing the model name.")
+    with ai_cols[3]:
+        new_retry_count = st.number_input(
+            "Validation retries",
+            min_value=0,
+            max_value=3,
+            value=int(getattr(settings, "ai_generation_max_validation_retries", 1)),
+            step=1,
+            key="_s_ai_generation_max_validation_retries",
+        )
+        if int(new_retry_count) != int(getattr(settings, "ai_generation_max_validation_retries", 1)):
+            settings.ai_generation_max_validation_retries = int(new_retry_count)
+            changed = True
+    with ai_cols[4]:
+        new_eval_ui = _toggle(
+            "Eval UI",
+            "_s_ai_eval_ui_enabled",
+            bool(getattr(settings, "ai_eval_ui_enabled", False)),
+        )
+        if new_eval_ui != bool(getattr(settings, "ai_eval_ui_enabled", False)):
+            settings.ai_eval_ui_enabled = new_eval_ui
+            changed = True
+    new_eval_log_path = st.text_input(
+        "Evaluation log path",
+        value=str(getattr(settings, "ai_eval_log_path", "")),
+        key="_s_ai_eval_log_path",
+    )
+    if new_eval_log_path != getattr(settings, "ai_eval_log_path", ""):
+        settings.ai_eval_log_path = new_eval_log_path
+        changed = True
+    new_failure_log_path = st.text_input(
+        "Generation failure log path",
+        value=str(getattr(settings, "ai_failure_log_path", "")),
+        key="_s_ai_failure_log_path",
+    )
+    if new_failure_log_path != getattr(settings, "ai_failure_log_path", ""):
+        settings.ai_failure_log_path = new_failure_log_path
+        changed = True
+
     lib_col, browse_col = st.columns([4, 1], vertical_alignment="bottom")
     with lib_col:
         new_lib_path = st.text_input("Library folder", value=settings.library_path, key="_s_lib_path", icon=":material/folder:")
@@ -2691,7 +2961,7 @@ def _render_section_filter(song: SongModel) -> None:
 def _render_preview_send() -> None:
     _sync_preview_state()
     song = _current_song()
-    has_selected_song = st.session_state.get("_selected_path") is not None
+    has_selected_song = song is not None
     settings: AppSettings = st.session_state._settings
 
     mode, section = st.columns([1,2], border=False, gap="medium", vertical_alignment="bottom")
@@ -3399,6 +3669,249 @@ def _show_notices_dialog() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Harmony AI Lab: Prompt Library -> Batch -> Candidate Store -> Critic -> Human
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _format_progression(progression: list) -> str:
+    parts = []
+    for item in progression or []:
+        chord = str(item.get("chord", "")) if isinstance(item, dict) else str(item)
+        parts.append(chord)
+    return " ".join(parts)
+
+
+def _render_ai_lab() -> None:
+    settings: AppSettings = st.session_state._settings
+    prompts_path = getattr(settings, "ai_prompt_library_path", "")
+    candidates_path = getattr(settings, "ai_candidate_store_path", "")
+    critic_path = getattr(settings, "ai_critic_log_path", "")
+    human_path = getattr(settings, "ai_human_eval_log_path", "")
+
+    lib_tab, batch_tab, browser_tab, critic_tab, human_tab = st.tabs(
+        ["Prompt Library", "Batch Generate", "Candidate Browser", "Critic Export/Import", "Human Review"]
+    )
+
+    with lib_tab:
+        _render_ai_lab_prompts(prompts_path)
+    with batch_tab:
+        _render_ai_lab_batch(settings, prompts_path, candidates_path)
+    with browser_tab:
+        _render_ai_lab_browser(candidates_path, critic_path, human_path)
+    with critic_tab:
+        _render_ai_lab_critic(candidates_path, critic_path)
+    with human_tab:
+        _render_ai_lab_human(settings, candidates_path, critic_path, human_path)
+
+
+def _render_ai_lab_prompts(prompts_path: str) -> None:
+    st.caption("Prompts drive batch generation. Only enabled prompts are generated.")
+    add_col, cat_col, btn_col = st.columns([3, 2, 1], vertical_alignment="bottom")
+    new_prompt = add_col.text_input("New prompt", key="_lab_new_prompt", placeholder="例: 雨の日のダウナーな気分")
+    new_category = cat_col.text_input("Category", key="_lab_new_category", placeholder="downtempo")
+    if btn_col.button("Add", key="_lab_add_prompt", width="stretch"):
+        try:
+            ai_eval.add_prompt(prompts_path, new_prompt, category=new_category)
+            _request_rerun(success_message="Prompt added.")
+        except ValueError as exc:
+            st.warning(str(exc))
+
+    if st.button("Add development seed prompts", key="_lab_seed_prompts"):
+        added = ai_eval.seed_prompt_library(prompts_path)
+        _request_rerun(success_message=f"Seeded {len(added)} prompt(s).")
+
+    prompts = ai_eval.load_prompts(prompts_path)
+    if not prompts:
+        st.info("No prompts yet. Add one above, or use the seed button.")
+        return
+    st.caption(f"{len(prompts)} prompt(s), {len([p for p in prompts if p.enabled])} enabled.")
+    for entry in prompts:
+        c1, c2, c3 = st.columns([5, 2, 1], vertical_alignment="center")
+        c1.markdown(f"**{entry.prompt}**  \n`{entry.prompt_id}`")
+        c2.caption(entry.category or "—")
+        enabled = c3.toggle("on", value=entry.enabled, key=f"_lab_en_{entry.prompt_id}", label_visibility="collapsed")
+        if enabled != entry.enabled:
+            ai_eval.set_prompt_enabled(prompts_path, entry.prompt_id, enabled)
+            _request_rerun()
+
+
+def _render_ai_lab_batch(settings: AppSettings, prompts_path: str, candidates_path: str) -> None:
+    ai_enabled = bool(getattr(settings, "ai_generation_enabled", False))
+    prompts = ai_eval.load_prompts(prompts_path)
+    enabled = [p for p in prompts if p.enabled]
+    st.caption("Generates N candidates for each enabled prompt. Failures are logged and do not stop the batch.")
+    if not enabled:
+        st.info("No enabled prompts. Add or enable prompts in the Prompt Library tab.")
+        return
+
+    per_prompt = st.number_input(
+        "Candidates per prompt",
+        min_value=1,
+        max_value=50,
+        value=int(getattr(settings, "ai_batch_candidates_per_prompt", 5)),
+        key="_lab_per_prompt",
+    )
+    total = len(enabled) * int(per_prompt)
+    st.caption(f"{len(enabled)} prompts × {int(per_prompt)} = {total} candidate(s) to attempt.")
+
+    if st.button("Generate Batch", key="_lab_generate_batch", disabled=not ai_enabled, type="primary"):
+        progress_bar = st.progress(0.0)
+        status = st.empty()
+
+        def on_progress(p: ai_eval.BatchProgress) -> None:
+            done = (p.prompt_index - 1) * p.candidate_total + p.candidate_index
+            progress_bar.progress(min(1.0, done / max(1, total)))
+            status.info(
+                f"Prompt {p.prompt_index} / {p.prompt_total}  ·  "
+                f"Candidate {p.candidate_index} / {p.candidate_total}  ·  "
+                f"Success {p.total_success}  ·  Failed {p.total_failed}"
+            )
+
+        summary = ai_eval.run_batch_generation(
+            enabled,
+            int(per_prompt),
+            settings=_ai_settings(settings),
+            candidate_store_path=candidates_path,
+            failure_log_path=getattr(settings, "ai_failure_log_path", "") or None,
+            progress_cb=on_progress,
+        )
+        progress_bar.progress(1.0)
+        st.success(f"Batch done. Success {summary.total_success}, Failed {summary.total_failed}.")
+    if not ai_enabled:
+        st.warning("Enable Emnyeca Harmony AI in Settings to run batch generation.")
+
+
+def _render_ai_lab_browser(candidates_path: str, critic_path: str, human_path: str) -> None:
+    views = ai_eval.build_candidate_views(candidates_path, critic_path, human_path)
+    if not views:
+        st.info("No candidates yet. Run a batch in the Batch Generate tab.")
+        return
+
+    f1, f2, f3 = st.columns([2, 2, 2], vertical_alignment="bottom")
+    review_filter = f1.selectbox(
+        "Filter",
+        ["all", "unreviewed", "candidate", "borderline", "reject", "human_unreviewed", "human_reviewed"],
+        key="_lab_browser_filter",
+    )
+    categories = sorted({v.category for v in views if v.category})
+    category = f2.selectbox("Category", ["(all)"] + categories, key="_lab_browser_category")
+    sort_key = f3.selectbox("Sort by", ["timestamp", "critic_score", "prompt", "category"], key="_lab_browser_sort")
+
+    rows = ai_eval.filter_candidate_views(
+        views,
+        review_filter=review_filter,
+        category=None if category == "(all)" else category,
+    )
+    rows = ai_eval.sort_candidate_views(rows, key=sort_key)
+    st.caption(f"{len(rows)} of {len(views)} candidate(s).")
+
+    table = [
+        {
+            "candidate_id": v.candidate_id,
+            "prompt": v.user_prompt,
+            "category": v.category,
+            "tempo": v.tempo,
+            "progression": _format_progression(v.progression),
+            "critic_score": v.critic_score,
+            "critic_decision": v.critic_decision,
+            "critic_tags": ", ".join(v.critic_tags),
+            "human_decision": v.human_decision,
+            "human_rating": v.human_rating,
+        }
+        for v in rows[:500]
+    ]
+    st.dataframe(table, width="stretch", hide_index=True)
+
+
+def _render_ai_lab_critic(candidates_path: str, critic_path: str) -> None:
+    st.markdown("**Critic Export** — hand this JSON to the external critic (Nyemos / ChatGPT).")
+    only_unreviewed = st.toggle("Unreviewed only", value=True, key="_lab_export_unreviewed")
+    reviewed = ai_eval.reviewed_candidate_ids(critic_path) if only_unreviewed else set()
+    rows = ai_eval.critic_export_rows(candidates_path, reviewed_ids=reviewed)
+    st.caption(f"{len(rows)} candidate(s) to export.")
+    export_text = ai_eval.format_critic_export(rows)
+    st.code(export_text, language="json")
+    st.download_button(
+        "Download critic batch (.json)",
+        data=export_text.encode("utf-8"),
+        file_name="critic-batch.json",
+        mime="application/json",
+        key="_lab_export_download",
+        disabled=not rows,
+    )
+
+    st.divider()
+    st.markdown("**Critic Import** — paste the critic's scored results (JSON array or JSONL).")
+    import_text = st.text_area("Critic results", key="_lab_critic_import_text", height=160)
+    if st.button("Import critic results", key="_lab_critic_import_btn"):
+        parsed = ai_eval.parse_critic_import(import_text)
+        if not parsed:
+            st.warning("No valid critic records found in the pasted text.")
+        else:
+            summary = ai_eval.import_critic_results(
+                critic_path,
+                parsed,
+                known_candidate_ids=ai_eval.candidate_ids(candidates_path),
+            )
+            st.success(f"Imported {len(summary.imported)} record(s).")
+            if summary.duplicates:
+                st.info(f"{len(summary.duplicates)} re-import(s) overrode earlier scores (kept in log).")
+            if summary.unknown:
+                st.warning(f"Unknown candidate_id(s) skipped: {', '.join(summary.unknown[:10])}")
+            if summary.invalid:
+                st.warning(f"{len(summary.invalid)} record(s) had no candidate_id.")
+
+
+def _render_ai_lab_human(settings: AppSettings, candidates_path: str, critic_path: str, human_path: str) -> None:
+    st.caption(
+        "Critic scores filter who reaches your review. Low-scored candidates stay "
+        "in the logs (no auto-reject yet) so the critic-vs-human gap stays measurable."
+    )
+    min_score = st.slider(
+        "Minimum critic score for review",
+        min_value=1,
+        max_value=5,
+        value=int(getattr(settings, "ai_human_review_min_critic_score", 3)),
+        key="_lab_human_min_score",
+    )
+    views = ai_eval.build_candidate_views(candidates_path, critic_path, human_path)
+    queue = ai_eval.human_review_queue(views, min_critic_score=min_score)
+    if not queue:
+        st.info("Human review queue is empty for the current threshold.")
+        return
+    st.caption(f"{len(queue)} candidate(s) awaiting your evaluation.")
+
+    for v in queue[:50]:
+        with st.container(border=True):
+            st.markdown(
+                f"**{v.user_prompt}** · `{v.candidate_id}` · tempo {v.tempo} · "
+                f"critic {v.critic_score} ({v.critic_decision})"
+            )
+            st.caption(_format_progression(v.progression))
+            if v.critic_tags:
+                st.caption("tags: " + ", ".join(v.critic_tags))
+            r_col, note_col = st.columns([1, 3], vertical_alignment="bottom")
+            rating = r_col.select_slider(
+                "Rating",
+                options=[1, 2, 3, 4, 5],
+                value=3,
+                key=f"_lab_human_rating_{v.candidate_id}",
+            )
+            note = note_col.text_input("Note", key=f"_lab_human_note_{v.candidate_id}")
+            use_col, reject_col = st.columns(2)
+            if use_col.button("Use", key=f"_lab_human_use_{v.candidate_id}", width="stretch"):
+                ai_eval.append_human_evaluation(
+                    human_path, candidate_id=v.candidate_id, human_decision="use", human_rating=int(rating), human_note=note
+                )
+                _request_rerun(success_message="Human evaluation saved (use).")
+            if reject_col.button("Reject", key=f"_lab_human_reject_{v.candidate_id}", width="stretch"):
+                ai_eval.append_human_evaluation(
+                    human_path, candidate_id=v.candidate_id, human_decision="reject", human_rating=int(rating), human_note=note
+                )
+                _request_rerun(success_message="Human evaluation saved (reject).")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3410,10 +3923,13 @@ def main() -> None:
     )
     st.markdown(_CSS, unsafe_allow_html=True)
     _ss_init()
+    _ensure_ollama_for_ai_startup()
     _render_pending_ui_messages()
     _render_header()
     _render_main()
     _render_preview_send()
+    with st.expander("Harmony AI Lab (beta)", expanded=False):
+        _render_ai_lab()
     with st.expander("Import / Layer Options / Settings / About & Links / Advanced", expanded=False):
         _render_import_section()
         st.divider()
