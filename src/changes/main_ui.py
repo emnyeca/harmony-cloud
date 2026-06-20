@@ -25,6 +25,7 @@ from changes.ai_generation import (
     ensure_ollama_ready,
     generate_harmony_from_ollama,
 )
+from changes import ai_evaluation as ai_eval
 from changes.app_settings import AppSettings, load_settings, save_settings
 from changes.editor import EditorState, editor_to_song_model
 from changes.key_signature import format_working_key, parse_working_key_display
@@ -3668,6 +3669,249 @@ def _show_notices_dialog() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Harmony AI Lab: Prompt Library -> Batch -> Candidate Store -> Critic -> Human
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _format_progression(progression: list) -> str:
+    parts = []
+    for item in progression or []:
+        chord = str(item.get("chord", "")) if isinstance(item, dict) else str(item)
+        parts.append(chord)
+    return " ".join(parts)
+
+
+def _render_ai_lab() -> None:
+    settings: AppSettings = st.session_state._settings
+    prompts_path = getattr(settings, "ai_prompt_library_path", "")
+    candidates_path = getattr(settings, "ai_candidate_store_path", "")
+    critic_path = getattr(settings, "ai_critic_log_path", "")
+    human_path = getattr(settings, "ai_human_eval_log_path", "")
+
+    lib_tab, batch_tab, browser_tab, critic_tab, human_tab = st.tabs(
+        ["Prompt Library", "Batch Generate", "Candidate Browser", "Critic Export/Import", "Human Review"]
+    )
+
+    with lib_tab:
+        _render_ai_lab_prompts(prompts_path)
+    with batch_tab:
+        _render_ai_lab_batch(settings, prompts_path, candidates_path)
+    with browser_tab:
+        _render_ai_lab_browser(candidates_path, critic_path, human_path)
+    with critic_tab:
+        _render_ai_lab_critic(candidates_path, critic_path)
+    with human_tab:
+        _render_ai_lab_human(settings, candidates_path, critic_path, human_path)
+
+
+def _render_ai_lab_prompts(prompts_path: str) -> None:
+    st.caption("Prompts drive batch generation. Only enabled prompts are generated.")
+    add_col, cat_col, btn_col = st.columns([3, 2, 1], vertical_alignment="bottom")
+    new_prompt = add_col.text_input("New prompt", key="_lab_new_prompt", placeholder="例: 雨の日のダウナーな気分")
+    new_category = cat_col.text_input("Category", key="_lab_new_category", placeholder="downtempo")
+    if btn_col.button("Add", key="_lab_add_prompt", width="stretch"):
+        try:
+            ai_eval.add_prompt(prompts_path, new_prompt, category=new_category)
+            _request_rerun(success_message="Prompt added.")
+        except ValueError as exc:
+            st.warning(str(exc))
+
+    if st.button("Add development seed prompts", key="_lab_seed_prompts"):
+        added = ai_eval.seed_prompt_library(prompts_path)
+        _request_rerun(success_message=f"Seeded {len(added)} prompt(s).")
+
+    prompts = ai_eval.load_prompts(prompts_path)
+    if not prompts:
+        st.info("No prompts yet. Add one above, or use the seed button.")
+        return
+    st.caption(f"{len(prompts)} prompt(s), {len([p for p in prompts if p.enabled])} enabled.")
+    for entry in prompts:
+        c1, c2, c3 = st.columns([5, 2, 1], vertical_alignment="center")
+        c1.markdown(f"**{entry.prompt}**  \n`{entry.prompt_id}`")
+        c2.caption(entry.category or "—")
+        enabled = c3.toggle("on", value=entry.enabled, key=f"_lab_en_{entry.prompt_id}", label_visibility="collapsed")
+        if enabled != entry.enabled:
+            ai_eval.set_prompt_enabled(prompts_path, entry.prompt_id, enabled)
+            _request_rerun()
+
+
+def _render_ai_lab_batch(settings: AppSettings, prompts_path: str, candidates_path: str) -> None:
+    ai_enabled = bool(getattr(settings, "ai_generation_enabled", False))
+    prompts = ai_eval.load_prompts(prompts_path)
+    enabled = [p for p in prompts if p.enabled]
+    st.caption("Generates N candidates for each enabled prompt. Failures are logged and do not stop the batch.")
+    if not enabled:
+        st.info("No enabled prompts. Add or enable prompts in the Prompt Library tab.")
+        return
+
+    per_prompt = st.number_input(
+        "Candidates per prompt",
+        min_value=1,
+        max_value=50,
+        value=int(getattr(settings, "ai_batch_candidates_per_prompt", 5)),
+        key="_lab_per_prompt",
+    )
+    total = len(enabled) * int(per_prompt)
+    st.caption(f"{len(enabled)} prompts × {int(per_prompt)} = {total} candidate(s) to attempt.")
+
+    if st.button("Generate Batch", key="_lab_generate_batch", disabled=not ai_enabled, type="primary"):
+        progress_bar = st.progress(0.0)
+        status = st.empty()
+
+        def on_progress(p: ai_eval.BatchProgress) -> None:
+            done = (p.prompt_index - 1) * p.candidate_total + p.candidate_index
+            progress_bar.progress(min(1.0, done / max(1, total)))
+            status.info(
+                f"Prompt {p.prompt_index} / {p.prompt_total}  ·  "
+                f"Candidate {p.candidate_index} / {p.candidate_total}  ·  "
+                f"Success {p.total_success}  ·  Failed {p.total_failed}"
+            )
+
+        summary = ai_eval.run_batch_generation(
+            enabled,
+            int(per_prompt),
+            settings=_ai_settings(settings),
+            candidate_store_path=candidates_path,
+            failure_log_path=getattr(settings, "ai_failure_log_path", "") or None,
+            progress_cb=on_progress,
+        )
+        progress_bar.progress(1.0)
+        st.success(f"Batch done. Success {summary.total_success}, Failed {summary.total_failed}.")
+    if not ai_enabled:
+        st.warning("Enable Emnyeca Harmony AI in Settings to run batch generation.")
+
+
+def _render_ai_lab_browser(candidates_path: str, critic_path: str, human_path: str) -> None:
+    views = ai_eval.build_candidate_views(candidates_path, critic_path, human_path)
+    if not views:
+        st.info("No candidates yet. Run a batch in the Batch Generate tab.")
+        return
+
+    f1, f2, f3 = st.columns([2, 2, 2], vertical_alignment="bottom")
+    review_filter = f1.selectbox(
+        "Filter",
+        ["all", "unreviewed", "candidate", "borderline", "reject", "human_unreviewed", "human_reviewed"],
+        key="_lab_browser_filter",
+    )
+    categories = sorted({v.category for v in views if v.category})
+    category = f2.selectbox("Category", ["(all)"] + categories, key="_lab_browser_category")
+    sort_key = f3.selectbox("Sort by", ["timestamp", "critic_score", "prompt", "category"], key="_lab_browser_sort")
+
+    rows = ai_eval.filter_candidate_views(
+        views,
+        review_filter=review_filter,
+        category=None if category == "(all)" else category,
+    )
+    rows = ai_eval.sort_candidate_views(rows, key=sort_key)
+    st.caption(f"{len(rows)} of {len(views)} candidate(s).")
+
+    table = [
+        {
+            "candidate_id": v.candidate_id,
+            "prompt": v.user_prompt,
+            "category": v.category,
+            "tempo": v.tempo,
+            "progression": _format_progression(v.progression),
+            "critic_score": v.critic_score,
+            "critic_decision": v.critic_decision,
+            "critic_tags": ", ".join(v.critic_tags),
+            "human_decision": v.human_decision,
+            "human_rating": v.human_rating,
+        }
+        for v in rows[:500]
+    ]
+    st.dataframe(table, width="stretch", hide_index=True)
+
+
+def _render_ai_lab_critic(candidates_path: str, critic_path: str) -> None:
+    st.markdown("**Critic Export** — hand this JSON to the external critic (Nyemos / ChatGPT).")
+    only_unreviewed = st.toggle("Unreviewed only", value=True, key="_lab_export_unreviewed")
+    reviewed = ai_eval.reviewed_candidate_ids(critic_path) if only_unreviewed else set()
+    rows = ai_eval.critic_export_rows(candidates_path, reviewed_ids=reviewed)
+    st.caption(f"{len(rows)} candidate(s) to export.")
+    export_text = ai_eval.format_critic_export(rows)
+    st.code(export_text, language="json")
+    st.download_button(
+        "Download critic batch (.json)",
+        data=export_text.encode("utf-8"),
+        file_name="critic-batch.json",
+        mime="application/json",
+        key="_lab_export_download",
+        disabled=not rows,
+    )
+
+    st.divider()
+    st.markdown("**Critic Import** — paste the critic's scored results (JSON array or JSONL).")
+    import_text = st.text_area("Critic results", key="_lab_critic_import_text", height=160)
+    if st.button("Import critic results", key="_lab_critic_import_btn"):
+        parsed = ai_eval.parse_critic_import(import_text)
+        if not parsed:
+            st.warning("No valid critic records found in the pasted text.")
+        else:
+            summary = ai_eval.import_critic_results(
+                critic_path,
+                parsed,
+                known_candidate_ids=ai_eval.candidate_ids(candidates_path),
+            )
+            st.success(f"Imported {len(summary.imported)} record(s).")
+            if summary.duplicates:
+                st.info(f"{len(summary.duplicates)} re-import(s) overrode earlier scores (kept in log).")
+            if summary.unknown:
+                st.warning(f"Unknown candidate_id(s) skipped: {', '.join(summary.unknown[:10])}")
+            if summary.invalid:
+                st.warning(f"{len(summary.invalid)} record(s) had no candidate_id.")
+
+
+def _render_ai_lab_human(settings: AppSettings, candidates_path: str, critic_path: str, human_path: str) -> None:
+    st.caption(
+        "Critic scores filter who reaches your review. Low-scored candidates stay "
+        "in the logs (no auto-reject yet) so the critic-vs-human gap stays measurable."
+    )
+    min_score = st.slider(
+        "Minimum critic score for review",
+        min_value=1,
+        max_value=5,
+        value=int(getattr(settings, "ai_human_review_min_critic_score", 3)),
+        key="_lab_human_min_score",
+    )
+    views = ai_eval.build_candidate_views(candidates_path, critic_path, human_path)
+    queue = ai_eval.human_review_queue(views, min_critic_score=min_score)
+    if not queue:
+        st.info("Human review queue is empty for the current threshold.")
+        return
+    st.caption(f"{len(queue)} candidate(s) awaiting your evaluation.")
+
+    for v in queue[:50]:
+        with st.container(border=True):
+            st.markdown(
+                f"**{v.user_prompt}** · `{v.candidate_id}` · tempo {v.tempo} · "
+                f"critic {v.critic_score} ({v.critic_decision})"
+            )
+            st.caption(_format_progression(v.progression))
+            if v.critic_tags:
+                st.caption("tags: " + ", ".join(v.critic_tags))
+            r_col, note_col = st.columns([1, 3], vertical_alignment="bottom")
+            rating = r_col.select_slider(
+                "Rating",
+                options=[1, 2, 3, 4, 5],
+                value=3,
+                key=f"_lab_human_rating_{v.candidate_id}",
+            )
+            note = note_col.text_input("Note", key=f"_lab_human_note_{v.candidate_id}")
+            use_col, reject_col = st.columns(2)
+            if use_col.button("Use", key=f"_lab_human_use_{v.candidate_id}", width="stretch"):
+                ai_eval.append_human_evaluation(
+                    human_path, candidate_id=v.candidate_id, human_decision="use", human_rating=int(rating), human_note=note
+                )
+                _request_rerun(success_message="Human evaluation saved (use).")
+            if reject_col.button("Reject", key=f"_lab_human_reject_{v.candidate_id}", width="stretch"):
+                ai_eval.append_human_evaluation(
+                    human_path, candidate_id=v.candidate_id, human_decision="reject", human_rating=int(rating), human_note=note
+                )
+                _request_rerun(success_message="Human evaluation saved (reject).")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3684,6 +3928,8 @@ def main() -> None:
     _render_header()
     _render_main()
     _render_preview_send()
+    with st.expander("Harmony AI Lab (beta)", expanded=False):
+        _render_ai_lab()
     with st.expander("Import / Layer Options / Settings / About & Links / Advanced", expanded=False):
         _render_import_section()
         st.divider()

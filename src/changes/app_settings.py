@@ -97,6 +97,38 @@ class AppSettings:
             str(Path.home() / "EUBChanges" / "ai-generation-failures.jsonl"),
         )
     )
+    # Evaluation loop: Prompt Library -> Batch Generate -> Candidate Store ->
+    # Critic (external) -> Human review. Each is a JSONL store joined by id.
+    ai_prompt_library_path: str = field(
+        default_factory=lambda: _env_str(
+            "EUB_CHANGES_AI_PROMPT_LIBRARY_PATH",
+            str(Path.home() / "EUBChanges" / "ai-prompts.jsonl"),
+        )
+    )
+    ai_candidate_store_path: str = field(
+        default_factory=lambda: _env_str(
+            "EUB_CHANGES_AI_CANDIDATE_STORE_PATH",
+            str(Path.home() / "EUBChanges" / "ai-candidates.jsonl"),
+        )
+    )
+    ai_critic_log_path: str = field(
+        default_factory=lambda: _env_str(
+            "EUB_CHANGES_AI_CRITIC_LOG_PATH",
+            str(Path.home() / "EUBChanges" / "ai-critic.jsonl"),
+        )
+    )
+    ai_human_eval_log_path: str = field(
+        default_factory=lambda: _env_str(
+            "EUB_CHANGES_AI_HUMAN_EVAL_LOG_PATH",
+            str(Path.home() / "EUBChanges" / "human-evaluation.jsonl"),
+        )
+    )
+    ai_batch_candidates_per_prompt: int = field(
+        default_factory=lambda: _env_int("EUB_CHANGES_AI_BATCH_CANDIDATES_PER_PROMPT", 5)
+    )
+    ai_human_review_min_critic_score: int = field(
+        default_factory=lambda: _env_int("EUB_CHANGES_AI_HUMAN_REVIEW_MIN_CRITIC_SCORE", 3)
+    )
 
 
 def _migrate_raw(raw: dict[str, Any]) -> dict[str, Any]:
